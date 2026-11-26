@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+dist/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Separate website repo, never part of the public app repo
+website/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
+
+# Temp / cache
+*.tsbuildinfo
+.cache/

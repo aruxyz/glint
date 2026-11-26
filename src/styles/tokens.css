@@ -1,0 +1,96 @@
+:root {
+  /* Layer 0: Native Mica fallback & ambient porcelain mesh tint */
+  --bg-mica-fallback: #e9eff7;
+  --bg-ambient-wash:
+    radial-gradient(62% 54% at 14% 8%, rgba(191, 219, 254, 0.36) 0%, rgba(191, 219, 254, 0) 70%),
+    radial-gradient(50% 48% at 88% 16%, rgba(203, 213, 225, 0.34) 0%, rgba(203, 213, 225, 0) 68%),
+    radial-gradient(58% 52% at 68% 92%, rgba(219, 234, 254, 0.30) 0%, rgba(219, 234, 254, 0) 72%);
+
+  /* Layer 1: Translucent structural canvas (allows Mica / ambient mesh to breathe through) */
+  --surface-canvas: rgba(246, 249, 253, 0.56);
+
+  /* Layer 2: Translucent Porcelain Chrome & Isolated HUD Glass (low WebView2 VRAM) */
+  --surface-glass-chrome: rgba(236, 242, 250, 0.78);
+  --bg-sidebar-tint: var(--surface-glass-chrome);
+  --surface-glass-toolbar: rgba(246, 249, 253, 0.94);
+  --surface-glass-dock: rgba(248, 250, 252, 0.94);
+  --surface-glass-drawer: rgba(246, 249, 253, 0.96);
+  --surface-glass-hud: rgba(248, 250, 252, 0.88);
+  --surface-glass-fullscreen: rgba(248, 250, 252, 0.88);
+
+  /* Layer 3: Layered Translucent Porcelain (NO backdrop-filter, 60fps safe for 200+ cards) */
+  --surface-card: rgba(255, 255, 255, 0.74);
+  --surface-card-hover: rgba(255, 255, 255, 0.90);
+  --surface-control: rgba(255, 255, 255, 0.76);
+  --surface-control-hover: rgba(255, 255, 255, 0.94);
+  --surface-input: rgba(255, 255, 255, 0.78);
+  --surface-input-focus: rgba(255, 255, 255, 0.96);
+
+  /* Cinema stage (solid matte, keeps video sharp and isolated) */
+  --surface-cinema-frame: #14171f;
+  --surface-scrim-dark: rgba(15, 23, 42, 0.84);
+
+  /* Text hierarchy (calibrated for >= 4.5:1 over translucent glass on dark bleed) */
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #3e4c5e;
+  --text-on-glass-video: #1e293b;
+
+  /* Single primary accent */
+  --accent-primary: #1d4ed8;
+  --accent-primary-hover: #1e40af;
+  --accent-text: #1e3a8a;
+  --accent-tint-bg: rgba(29, 78, 216, 0.12);
+
+  /* Semantic status tokens */
+  --status-success-fg: #15803d;
+  --status-success-bg: #ecfdf5;
+  --status-warning-fg: #b45309;
+  --status-warning-bg: #fffbeb;
+  --status-error-fg: #991b1b;
+  --status-error-bg: #fef2f2;
+
+  /* Borders & Specular Glass Rim */
+  --border-hairline: rgba(15, 23, 42, 0.09);
+  --border-glass-edge: rgba(255, 255, 255, 0.72);
+  --border-glass-outer: rgba(15, 23, 42, 0.11);
+  --border-control: #475569;
+  --border-glass-specular: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  --border-card-specular:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.55);
+
+  /* Elevation shadows */
+  --shadow-card-rest: 0 1px 3px rgba(15, 23, 42, 0.05);
+  --shadow-card-hover:
+    0 8px 20px rgba(15, 23, 42, 0.08),
+    0 2px 6px rgba(15, 23, 42, 0.04);
+  --shadow-glass-float:
+    0 14px 34px rgba(15, 23, 42, 0.12),
+    0 2px 8px rgba(15, 23, 42, 0.06);
+
+  /* Typography */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Radii */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 9999px;
+
+  /* Motion curves */
+  --ease-fluent: cubic-bezier(0.2, 0, 0, 1);
+  --ease-fluent-exit: cubic-bezier(0.4, 0, 1, 1);
+  --ease-tactile: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* Motion durations */
+  --dur-press: 95ms;
+  --dur-micro: 130ms;
+  --dur-overlay: 165ms;
+  --dur-overlay-exit: 120ms;
+  --dur-panel: 220ms;
+  --dur-panel-exit: 170ms;
+}
