@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/banner.png" alt="Glint, Local Windows Game Clip Manager and Editor" width="100%" />
+</p>
+
 # Glint
 
 Local Windows desktop game clip manager and editor built with Tauri, Rust, React, TypeScript, and FFmpeg.
