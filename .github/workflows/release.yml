@@ -34,6 +34,37 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Download FFmpeg sidecars
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $binDir = "src-tauri/binaries"
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          $zipPath = Join-Path $env:RUNNER_TEMP "ffmpeg-release-essentials.zip"
+          $extractDir = Join-Path $env:RUNNER_TEMP "ffmpeg-extract"
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $zipPath
+          if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
+          Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+          $ffmpeg = Get-ChildItem -Path $extractDir -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+          $ffprobe = Get-ChildItem -Path $extractDir -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+          if (-not $ffmpeg -or -not $ffprobe) {
+            throw "ffmpeg.exe or ffprobe.exe not found in downloaded archive"
+          }
+          $ffmpegOut = Join-Path $binDir "ffmpeg-x86_64-pc-windows-msvc.exe"
+          $ffprobeOut = Join-Path $binDir "ffprobe-x86_64-pc-windows-msvc.exe"
+          Copy-Item -Path $ffmpeg.FullName -Destination $ffmpegOut -Force
+          Copy-Item -Path $ffprobe.FullName -Destination $ffprobeOut -Force
+          foreach ($file in @($ffmpegOut, $ffprobeOut)) {
+            if (-not (Test-Path $file)) {
+              throw "Missing sidecar binary: $file"
+            }
+            $sizeBytes = (Get-Item $file).Length
+            if ($sizeBytes -le 10MB) {
+              throw "Sidecar binary too small ($sizeBytes bytes): $file"
+            }
+            Write-Host "Verified $file ($sizeBytes bytes)"
+          }
+
       - name: Build Windows app and updater artifacts
         uses: tauri-apps/tauri-action@v0
         env:

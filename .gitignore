@@ -5,6 +5,7 @@ dist/
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/
+src-tauri/binaries/*.exe
 
 # Separate website repo, never part of the public app repo
 website/

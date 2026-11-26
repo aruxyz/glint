@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,8 +67,40 @@ struct FfprobeStream {
     tags: HashMap<String, String>,
 }
 
+pub fn resolve_media_binary(program: &str) -> OsString {
+    let exe_path = std::env::current_exe().ok();
+    let exe_dir = exe_path.as_deref().and_then(Path::parent);
+    resolve_media_binary_from_exe(program, exe_dir)
+}
+
+fn resolve_media_binary_from_exe(program: &str, exe_dir: Option<&Path>) -> OsString {
+    if program != "ffmpeg" && program != "ffprobe" {
+        return OsString::from(program);
+    }
+
+    if let Some(dir) = exe_dir {
+        let plain_name = format!("{program}.exe");
+        let target_triple_name = format!("{program}-x86_64-pc-windows-msvc.exe");
+        let mut candidates: Vec<PathBuf> = vec![
+            dir.join(&plain_name),
+            dir.join(&target_triple_name),
+        ];
+        if let Some(grandparent) = dir.parent().and_then(Path::parent) {
+            candidates.push(grandparent.join("binaries").join(&target_triple_name));
+        }
+
+        for candidate in candidates {
+            if candidate.is_file() {
+                return candidate.into_os_string();
+            }
+        }
+    }
+
+    OsString::from(program)
+}
+
 pub fn std_command(program: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new(program);
+    let mut cmd = std::process::Command::new(resolve_media_binary(program));
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -77,7 +110,7 @@ pub fn std_command(program: &str) -> std::process::Command {
 }
 
 pub fn tokio_command(program: &str) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(program);
+    let mut cmd = tokio::process::Command::new(resolve_media_binary(program));
     #[cfg(target_os = "windows")]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -88,7 +121,7 @@ pub fn tokio_command(program: &str) -> tokio::process::Command {
 /// Spawn background media tools at BELOW_NORMAL priority with no console window
 /// so scanning, probing, thumbnails, and DASH remuxing do not stutter active games.
 pub fn tokio_command_bg(program: &str) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(program);
+    let mut cmd = tokio::process::Command::new(resolve_media_binary(program));
     #[cfg(target_os = "windows")]
     {
         cmd.creation_flags(BACKGROUND_PROCESS_FLAGS);
@@ -834,4 +867,77 @@ pub fn parse_fraction(raw: &str) -> Option<f64> {
         return None;
     }
     trimmed.parse::<f64>().ok().filter(|&v| v > 0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn make_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("glint_media_test_{label}_{nanos}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn resolves_non_media_program_without_lookup() {
+        let root = make_temp_dir("non_media");
+        let resolved = resolve_media_binary_from_exe("explorer.exe", Some(&root));
+        assert_eq!(resolved, OsString::from("explorer.exe"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolves_plain_then_triple_then_binaries_then_fallback() {
+        let root = make_temp_dir("priority");
+        let exe_dir = root.join("target").join("debug");
+        let binaries_dir = root.join("binaries");
+        fs::create_dir_all(&exe_dir).expect("create exe_dir");
+        fs::create_dir_all(&binaries_dir).expect("create binaries_dir");
+
+        // Fallback to PATH name when no sidecar file exists.
+        assert_eq!(
+            resolve_media_binary_from_exe("ffmpeg", Some(&exe_dir)),
+            OsString::from("ffmpeg")
+        );
+
+        // 3rd priority: <exe_dir>/../../binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+        let dev_bin = binaries_dir.join("ffmpeg-x86_64-pc-windows-msvc.exe");
+        fs::write(&dev_bin, b"stub").expect("write dev_bin");
+        assert_eq!(
+            resolve_media_binary_from_exe("ffmpeg", Some(&exe_dir)),
+            dev_bin.as_os_str()
+        );
+
+        // 2nd priority: <exe_dir>/ffmpeg-x86_64-pc-windows-msvc.exe
+        let triple_bin = exe_dir.join("ffmpeg-x86_64-pc-windows-msvc.exe");
+        fs::write(&triple_bin, b"stub").expect("write triple_bin");
+        assert_eq!(
+            resolve_media_binary_from_exe("ffmpeg", Some(&exe_dir)),
+            triple_bin.as_os_str()
+        );
+
+        // 1st priority: <exe_dir>/ffmpeg.exe
+        let plain_bin = exe_dir.join("ffmpeg.exe");
+        fs::write(&plain_bin, b"stub").expect("write plain_bin");
+        assert_eq!(
+            resolve_media_binary_from_exe("ffmpeg", Some(&exe_dir)),
+            plain_bin.as_os_str()
+        );
+
+        // Verify ffprobe also resolves via binaries_dir.
+        let probe_bin = binaries_dir.join("ffprobe-x86_64-pc-windows-msvc.exe");
+        fs::write(&probe_bin, b"stub").expect("write probe_bin");
+        assert_eq!(
+            resolve_media_binary_from_exe("ffprobe", Some(&exe_dir)),
+            probe_bin.as_os_str()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }
