@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach artifacts to"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -42,7 +47,28 @@ jobs:
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
           $zipPath = Join-Path $env:RUNNER_TEMP "ffmpeg-release-essentials.zip"
           $extractDir = Join-Path $env:RUNNER_TEMP "ffmpeg-extract"
-          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $zipPath
+          $sources = @(
+            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+            "https://github.com/GyanD/codexffmpeg/releases/download/9.1/ffmpeg-9.1-essentials_build.zip"
+          )
+          $downloaded = $false
+          foreach ($source in $sources) {
+            if ($downloaded) { break }
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              try {
+                Write-Host "Downloading $source (attempt $attempt)"
+                Invoke-WebRequest -Uri $source -OutFile $zipPath
+                $downloaded = $true
+                break
+              } catch {
+                Write-Host "Download failed: $($_.Exception.Message)"
+                if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+              }
+            }
+          }
+          if (-not $downloaded) {
+            throw "Could not download the FFmpeg archive from any source"
+          }
           if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
           Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
           $ffmpeg = Get-ChildItem -Path $extractDir -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
@@ -73,7 +99,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tauriScript: bun run tauri
-          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('Glint {0}', github.ref_name) || '' }}
+          tagName: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name || '') }}
+          releaseName: ${{ inputs.tag && format('Glint {0}', inputs.tag) || (startsWith(github.ref, 'refs/tags/') && format('Glint {0}', github.ref_name) || '') }}
           releaseDraft: true
           prerelease: false
