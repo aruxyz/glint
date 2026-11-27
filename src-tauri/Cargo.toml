@@ -3,6 +3,7 @@ name = "glint"
 version = "0.3.0"
 description = "Glint - Unified Game Clip Manager"
 authors = ["Glint"]
+license = "MIT"
 edition = "2021"
 
 [lib]

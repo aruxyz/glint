@@ -40,3 +40,14 @@ bun run tauri build
 ```
 
 Installers (`.exe` / `.msi`) are generated under `src-tauri/target/release/bundle/`.
+
+## Code Signing Policy
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+- **Build & Signing:** Official release binaries are built exclusively from this repository via GitHub Actions and submitted for signing with maintainer approval.
+- **Privacy:** Glint runs 100% locally on Windows with zero accounts, zero telemetry, and zero cloud uploads.
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
