@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { FolderMinus, FolderPlus, Layers, Trash2, X } from "lucide-react";
+import { Download, FolderMinus, FolderPlus, Layers, Trash2, X } from "lucide-react";
 import { usePresence } from "../../hooks/usePresence";
+import { isTauriRuntime } from "../../lib/api";
 import type { CollectionSummary } from "../../lib/types";
 
 interface BulkActionBarProps {
@@ -10,6 +11,7 @@ interface BulkActionBarProps {
   onClearSelection: () => void;
   onBulkAddToCollection: () => void;
   onBulkRemoveFromCollection: (collection: CollectionSummary) => void;
+  onBulkBatchExport: () => void;
   onBulkMerge: () => void;
   onBulkDelete: () => void;
 }
@@ -21,9 +23,11 @@ export function BulkActionBar({
   onClearSelection,
   onBulkAddToCollection,
   onBulkRemoveFromCollection,
+  onBulkBatchExport,
   onBulkMerge,
   onBulkDelete,
 }: BulkActionBarProps) {
+  const inTauri = isTauriRuntime();
   const open = selectedCount > 0;
   const { present, isExiting } = usePresence(open, 120);
   const [displayCount, setDisplayCount] = useState(selectedCount);
@@ -86,6 +90,17 @@ export function BulkActionBar({
           Remove from Collection
         </button>
       )}
+
+      <button
+        type="button"
+        onClick={onBulkBatchExport}
+        disabled={!inTauri}
+        title={!inTauri ? "Batch export requires Glint desktop app" : "Export selected clips"}
+        className="btn-secondary h-8 gap-1.5 px-3 text-[12px]"
+      >
+        <Download className="h-3.5 w-3.5" aria-hidden="true" />
+        Batch Export
+      </button>
 
       {displayCount >= 2 && (
         <button

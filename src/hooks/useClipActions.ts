@@ -108,6 +108,34 @@ export function useClipActions({
     [setToast]
   );
 
+  const handleCopyClipFile = useCallback(
+    async (clip: ClipSummary) => {
+      if (!isTauriRuntime()) {
+        setToast({
+          kind: "info",
+          title: "Desktop runtime required",
+          detail: clip.filePath,
+        });
+        return;
+      }
+      try {
+        await api.copyFileToClipboard(clip.filePath);
+        setToast({
+          kind: "info",
+          title: "Copied file to clipboard",
+          detail: `${clip.fileName} (ready to paste in Discord)`,
+        });
+      } catch (err) {
+        setToast({
+          kind: "export_error",
+          message:
+            err instanceof Error ? err.message : "Could not copy file to clipboard.",
+        });
+      }
+    },
+    [setToast]
+  );
+
   const handleDeleteClip = useCallback(
     (clip: ClipSummary) => {
       setConfirmState({
@@ -300,6 +328,7 @@ export function useClipActions({
   return {
     handleOnboardingComplete,
     handleRevealFile,
+    handleCopyClipFile,
     handleDeleteClip,
     handleBulkDelete,
     handleBulkRemoveFromCollection,

@@ -86,6 +86,7 @@ pub fn build_router(state: StreamerState) -> Router {
         .route("/video/{clipId}", get(stream_video))
         .route("/audio/{clipId}/{trackOrder}", get(stream_audio))
         .route("/local-audio", get(stream_local_audio))
+        .route("/local-audio-waveform", get(get_local_audio_waveform))
         .route("/thumb/{clipId}", get(get_thumb))
         .route("/waveform/{clipId}/{trackOrder}", get(get_waveform))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
@@ -333,11 +334,8 @@ async fn stream_audio(
     serve_file_with_range(&cache_path, "audio/mp4", headers.get(header::RANGE)).await
 }
 
-async fn stream_local_audio(
-    Query(q): Query<LocalAudioQuery>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    let trimmed = q.path.trim();
+async fn resolve_safe_local_audio_path(raw_path: &str) -> AppResult<(PathBuf, &'static str)> {
+    let trimmed = raw_path.trim();
     if trimmed.is_empty() || trimmed.contains('\0') {
         return Err(AppError::InvalidInput("Invalid audio path".to_string()));
     }
@@ -359,7 +357,38 @@ async fn stream_local_audio(
         AppError::InvalidInput("Unsupported audio file extension".to_string())
     })?;
 
+    Ok((canon_path, mime))
+}
+
+fn hash_path_fnv1a(path: &Path) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in path.to_string_lossy().to_ascii_lowercase().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+async fn stream_local_audio(
+    Query(q): Query<LocalAudioQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let (canon_path, mime) = resolve_safe_local_audio_path(&q.path).await?;
     serve_file_with_range(&canon_path, mime, headers.get(header::RANGE)).await
+}
+
+async fn get_local_audio_waveform(
+    State(state): State<StreamerState>,
+    Query(q): Query<LocalAudioQuery>,
+) -> Result<Json<WaveformResponse>, AppError> {
+    let (canon_path, _) = resolve_safe_local_audio_path(&q.path).await?;
+    let path_hash = hash_path_fnv1a(&canon_path);
+    let cache_path = state
+        .paths
+        .waveform_cache_dir
+        .join(format!("local_{path_hash}.json"));
+    let peaks = extract_waveform(&canon_path, 0, &cache_path, 160).await?;
+    Ok(Json(WaveformResponse { peaks }))
 }
 
 async fn get_thumb(
@@ -769,6 +798,22 @@ mod tests {
         )
         .await;
         assert!(bad_ext.starts_with("HTTP/1.1 400"), "got: {bad_ext}");
+
+        let unauth_wf = send_raw_get(
+            addr,
+            &format!("/local-audio-waveform?path={encoded_mp3}"),
+            None,
+        )
+        .await;
+        assert!(unauth_wf.starts_with("HTTP/1.1 401"), "got: {unauth_wf}");
+
+        let bad_ext_wf = send_raw_get(
+            addr,
+            &format!("/local-audio-waveform?token={token}&path={encoded_txt}"),
+            None,
+        )
+        .await;
+        assert!(bad_ext_wf.starts_with("HTTP/1.1 400"), "got: {bad_ext_wf}");
 
         let ok_resp = send_raw_get(
             addr,

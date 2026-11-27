@@ -2,6 +2,8 @@ pub mod clips;
 pub mod collections;
 pub mod editor_projects;
 pub mod folders;
+pub mod markers;
+pub mod presets;
 pub mod search;
 pub mod settings;
 

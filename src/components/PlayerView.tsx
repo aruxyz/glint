@@ -10,12 +10,15 @@ import {
 } from "./player/playerContextMenus";
 import { useMultiTrackAudio } from "./player/useMultiTrackAudio";
 import { usePlayerShortcuts } from "./player/usePlayerShortcuts";
-import { getVideoStreamUrl, isTauriRuntime } from "../lib/api";
+import { api, getVideoStreamUrl, isTauriRuntime } from "../lib/api";
 import type {
   AspectMode,
   AudioTrackMix,
+  ClipMarker,
   ClipSummary,
+  CustomExportPreset,
   ExportPreset,
+  MarkerColor,
 } from "../lib/types";
 
 const PREVIEW_VOLUME_STORAGE_KEY = "glint_preview_volume";
@@ -71,6 +74,8 @@ interface PlayerViewProps {
   streamerToken: string;
   defaultAutoNext: boolean;
   autoCopyToClipboard: boolean;
+  customPresets: CustomExportPreset[];
+  onOpenExportSettings: () => void;
   savedTrim?: { startSec: number; endSec: number } | null;
   onSaveTrimRange?: (clipId: string, startSec: number, endSec: number) => void;
   onBack: () => void;
@@ -78,6 +83,7 @@ interface PlayerViewProps {
   onToggleFavorite: (clip: ClipSummary) => void;
   onOpenCollectionPicker: (clip: ClipSummary) => void;
   onEditClip: (clip: ClipSummary) => void;
+  onCopyClipFile: (clip: ClipSummary) => void;
   onRevealFile: (clip: ClipSummary) => void;
   onDeleteClip: (clip: ClipSummary) => void;
   onOpenContextMenu: (x: number, y: number, entries: ContextMenuEntry[]) => void;
@@ -107,6 +113,7 @@ interface PlayerViewProps {
   onStartExport: (params: {
     clip: ClipSummary;
     preset: ExportPreset;
+    customPresetId?: string | null;
     startSec: number;
     endSec: number;
     audioMix: AudioTrackMix[];
@@ -124,6 +131,8 @@ export function PlayerView({
   streamerToken,
   defaultAutoNext,
   autoCopyToClipboard,
+  customPresets,
+  onOpenExportSettings,
   savedTrim,
   onSaveTrimRange,
   onBack,
@@ -131,6 +140,7 @@ export function PlayerView({
   onToggleFavorite,
   onOpenCollectionPicker,
   onEditClip,
+  onCopyClipFile,
   onRevealFile,
   onDeleteClip,
   onOpenContextMenu,
@@ -203,6 +213,26 @@ export function PlayerView({
   const [exportingPreset, setExportingPreset] = useState<ExportPreset | null>(null);
   const [settingCover, setSettingCover] = useState(false);
   const [takingSnapshot, setTakingSnapshot] = useState(false);
+  const [markers, setMarkers] = useState<ClipMarker[]>([]);
+  const [focusedMarkerId, setFocusedMarkerId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setFocusedMarkerId(null);
+    api
+      .listClipMarkers(clip.id)
+      .then((list) => {
+        if (active) {
+          setMarkers([...list].sort((a, b) => a.timeSec - b.timeSec));
+        }
+      })
+      .catch(() => {
+        if (active) setMarkers([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [clip.id]);
 
   const currentIndex = useMemo(
     () => queue.findIndex((item) => item.id === clip.id),
@@ -424,6 +454,53 @@ export function PlayerView({
     [commitTrimRange]
   );
 
+  const handleAddMarkerAtPlayhead = useCallback(
+    async (timeSec: number) => {
+      const safeDur = duration || clip.durationSec || 0;
+      const clampedTime = Math.max(0, Math.min(safeDur > 0 ? safeDur : timeSec, timeSec));
+      const nearby = markers.find((m) => Math.abs(m.timeSec - clampedTime) < 0.25);
+      if (nearby) {
+        setFocusedMarkerId(nearby.id);
+        return;
+      }
+      try {
+        const created = await api.createClipMarker({
+          clipId: clip.id,
+          timeSec: clampedTime,
+          label: `Marker ${markers.length + 1}`,
+          color: "blue",
+        });
+        setMarkers((prev) =>
+          [...prev, created].sort((a, b) => a.timeSec - b.timeSec)
+        );
+      } catch {
+        // Ignore marker creation errors in non-persistent preview.
+      }
+    },
+    [clip.durationSec, clip.id, duration, markers]
+  );
+
+  const handleUpdateMarker = useCallback(
+    async (
+      id: string,
+      patch: { label?: string; color?: MarkerColor; timeSec?: number }
+    ) => {
+      const updated = await api.updateClipMarker({ id, ...patch });
+      setMarkers((prev) =>
+        prev
+          .map((m) => (m.id === id ? updated : m))
+          .sort((a, b) => a.timeSec - b.timeSec)
+      );
+    },
+    []
+  );
+
+  const handleDeleteMarker = useCallback(async (id: string) => {
+    await api.deleteClipMarker(id);
+    setMarkers((prev) => prev.filter((m) => m.id !== id));
+    setFocusedMarkerId((prev) => (prev === id ? null : prev));
+  }, []);
+
   usePlayerShortcuts({
     clip,
     videoRef,
@@ -439,6 +516,7 @@ export function PlayerView({
     setEndSec: handleShortcutSetEnd,
     setLoopActive,
     onToggleMute: handleToggleMute,
+    onAddMarkerAtPlayhead: (t) => void handleAddMarkerAtPlayhead(t),
     setAspectMode,
     showHudBriefly,
     togglePlay,
@@ -486,19 +564,24 @@ export function PlayerView({
     }
   };
 
-  const triggerExport = async (preset: ExportPreset) => {
+  const triggerExport = async (preset: ExportPreset, customPreset?: CustomExportPreset) => {
     if (exportingPreset) return;
     setExportingPreset(preset);
     try {
       await onStartExport({
         clip,
         preset,
+        customPresetId: customPreset?.id ?? null,
         startSec,
         endSec,
         audioMix: getEffectiveMix(),
         copyToClipboard: autoCopyToClipboard,
-        aspectMode,
-        normalizeAudio,
+        aspectMode: customPreset
+          ? customPreset.stretch169
+            ? "stretch_16_9"
+            : "original"
+          : aspectMode,
+        normalizeAudio: customPreset ? customPreset.audioNormalize : normalizeAudio,
       });
     } finally {
       setExportingPreset(null);
@@ -565,6 +648,7 @@ export function PlayerView({
         onSnapshot: () => void handleSnapshotAction(),
         onToggleFavorite,
         onEditClip,
+        onCopyOriginalFile: () => onCopyClipFile(clip),
         onRevealFile,
         onDeleteClip,
       })
@@ -582,6 +666,7 @@ export function PlayerView({
         onOpenCollectionPicker,
         onToggleFavorite,
         onEditClip,
+        onCopyClipFile,
         onRevealFile,
         onDeleteClip,
       })
@@ -616,6 +701,15 @@ export function PlayerView({
       mixes={mixes}
       soloTrackOrder={soloTrackOrder}
       exportingPreset={exportingPreset}
+      customPresets={customPresets}
+      markers={markers}
+      focusedMarkerId={focusedMarkerId}
+      onClearFocusedMarker={() => setFocusedMarkerId(null)}
+      onAddMarkerAtPlayhead={() =>
+        void handleAddMarkerAtPlayhead(videoRef.current?.currentTime ?? currentTime)
+      }
+      onUpdateMarker={handleUpdateMarker}
+      onDeleteMarker={handleDeleteMarker}
       onTogglePlay={() => void togglePlay()}
       onSeek={seekTo}
       onStepFrame={stepFrame}
@@ -645,6 +739,10 @@ export function PlayerView({
       onToggleSolo={handleToggleSolo}
       onToggleFullscreen={toggleFullscreen}
       onTriggerExport={(preset) => void triggerExport(preset)}
+      onTriggerCustomExport={(customPreset) =>
+        void triggerExport("discord_10mb", customPreset)
+      }
+      onOpenExportSettings={onOpenExportSettings}
       onOpenStageContextMenu={handlePlayerStageContextMenu}
     />
   );

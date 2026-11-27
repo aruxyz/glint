@@ -19,18 +19,21 @@ use crate::db::{Db, ScannedClipInsert};
 use crate::error::{AppError, AppResult};
 use crate::media::{generate_thumbnail, probe_clip};
 use crate::models::{
-    AspectMode, AudioTrackMix, ClipDetail, ClipIdEvent, CollectionKind, ExportCompletedEvent,
-    ExportFailedEvent, ExportPreset, MergeClipsRequest, SaveTrimmedClipRequest, SourceType,
-    StartEditorExportRequest, StartExportRequest,
+    AspectMode, AudioTrackMix, BatchExportCompletedEvent, BatchExportErrorItem,
+    BatchExportProgressEvent, BatchExportStartResult, ClipDetail, ClipIdEvent, CollectionKind,
+    CustomExportPreset, ExportCompletedEvent, ExportFailedEvent, ExportPreset, ExportProgressEvent,
+    MergeClipsRequest, SaveTrimmedClipRequest, SourceType, StartEditorExportRequest,
+    StartExportRequest,
 };
 use crate::paths::{normalize_windows_path, AppPaths};
 use crate::win::clipboard::copy_file_to_clipboard;
 
 pub use args::{
     build_hq_trim_args, build_save_trim_args, build_vertical_args, calculate_discord_bitrate,
-    compute_stretch_16_9_dims, is_unmodified_audio_mix, validate_export_plan, BitratePlan,
+    calculate_target_size_bitrate, compute_stretch_16_9_dims, is_unmodified_audio_mix,
+    validate_export_plan, BitratePlan,
 };
-use args::{build_encoded_args, build_lossless_args};
+use args::{build_custom_preset_args, build_encoded_args, build_lossless_args};
 pub use merge::{build_merge_clips_args, execute_merge_pipeline, MergeClipInput};
 use merge::register_merged_clip_in_library;
 pub use runner::{ActiveJobControl, ExportRunError, ProgressCallback};
@@ -42,7 +45,9 @@ pub use sanitize::{
     ensure_contained_in_dir, resolve_unique_output_path, sanitize_filename_stem,
     validate_export_range, validate_save_trim_range,
 };
-use sanitize::{build_editor_output_path, build_merge_output_path, build_output_path};
+use sanitize::{
+    build_custom_output_path, build_editor_output_path, build_merge_output_path, build_output_path,
+};
 pub use editor::{
     build_editor_export_args, compute_timeline_duration, execute_editor_export_pipeline,
     prepare_editor_timeline, EditorFraming, EditorPresetMode, EditorTransitionMode,
@@ -52,6 +57,7 @@ pub use editor::{
 #[derive(Clone)]
 pub struct ExportManager {
     active: Arc<Mutex<HashMap<String, ActiveJobControl>>>,
+    active_batches: Arc<Mutex<HashMap<String, ActiveJobControl>>>,
 }
 
 impl Default for ExportManager {
@@ -64,12 +70,27 @@ impl ExportManager {
     pub fn new() -> Self {
         Self {
             active: Arc::new(Mutex::new(HashMap::new())),
+            active_batches: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn cancel_job(&self, job_id: &str) -> bool {
         let guard = self.active.lock().expect("export active lock poisoned");
         if let Some(ctrl) = guard.get(job_id) {
+            ctrl.cancelled.store(true, Ordering::SeqCst);
+            ctrl.notify.notify_waiters();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn cancel_batch_job(&self, batch_id: &str) -> bool {
+        let guard = self
+            .active_batches
+            .lock()
+            .expect("export active_batches lock poisoned");
+        if let Some(ctrl) = guard.get(batch_id) {
             ctrl.cancelled.store(true, Ordering::SeqCst);
             ctrl.notify.notify_waiters();
             true
@@ -102,20 +123,44 @@ impl ExportManager {
         let (start_sec, end_sec, duration_sec) =
             validate_export_range(request.start_sec, request.end_sec, clip.duration_sec, 0.5)?;
 
+        let custom_preset = match request.custom_preset_id.as_deref() {
+            Some(id) if !id.trim().is_empty() => {
+                let found = db.get_custom_preset(id.trim())?.ok_or_else(|| {
+                    AppError::NotFound(format!("Custom preset '{}' not found", id.trim()))
+                })?;
+                Some(found)
+            }
+            _ => None,
+        };
+
         std::fs::create_dir_all(&export_output_dir)?;
         let job_id = Uuid::new_v4().to_string();
-        let output_path = build_output_path(
-            &export_output_dir,
-            &detail.clip.file_name,
-            request.preset,
-            &job_id,
-        )?;
+        let output_path = if let Some(ref cp) = custom_preset {
+            build_custom_output_path(
+                &export_output_dir,
+                &detail.clip.file_name,
+                &cp.name,
+                &cp.container,
+                &job_id,
+            )?
+        } else {
+            build_output_path(
+                &export_output_dir,
+                &detail.clip.file_name,
+                request.preset,
+                &job_id,
+            )?
+        };
         let output_str = output_path.to_string_lossy().to_string();
+        let job_preset_label = custom_preset
+            .as_ref()
+            .map(|cp| format!("custom:{}", cp.id))
+            .unwrap_or_else(|| request.preset.as_str().to_string());
 
         db.insert_export_job(
             &job_id,
             &request.clip_id,
-            request.preset.as_str(),
+            &job_preset_label,
             start_sec,
             end_sec,
             &output_str,
@@ -136,7 +181,7 @@ impl ExportManager {
 
         tauri::async_runtime::spawn(async move {
             let progress_cb = tauri_progress_callback(&app);
-            let result = execute_export_pipeline(
+            let result = execute_export_pipeline_with_custom(
                 Some(progress_cb),
                 &job_id_spawn,
                 &src_path,
@@ -146,6 +191,7 @@ impl ExportManager {
                 clip.height,
                 track_count,
                 &request,
+                custom_preset.as_ref(),
                 &hw_encoders,
                 &ctrl,
             )
@@ -506,6 +552,322 @@ impl ExportManager {
 
         Ok(job_id)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_batch_export_job(
+        &self,
+        app: AppHandle,
+        db: Db,
+        clip_ids: Vec<String>,
+        preset: ExportPreset,
+        custom_preset_id: Option<String>,
+        aspect_mode: AspectMode,
+        normalize_audio: bool,
+        export_output_dir: PathBuf,
+        hw_encoders: Vec<&'static str>,
+    ) -> AppResult<BatchExportStartResult> {
+        if clip_ids.is_empty() {
+            return Err(AppError::InvalidInput(
+                "At least 1 clip is required for batch export".to_string(),
+            ));
+        }
+
+        let custom_preset = match custom_preset_id.as_deref() {
+            Some(id) if !id.trim().is_empty() => {
+                let found = db.get_custom_preset(id.trim())?.ok_or_else(|| {
+                    AppError::NotFound(format!("Custom preset '{}' not found", id.trim()))
+                })?;
+                Some(found)
+            }
+            _ => None,
+        };
+
+        std::fs::create_dir_all(&export_output_dir)?;
+        let batch_id = Uuid::new_v4().to_string();
+        let total = clip_ids.len();
+
+        let ctrl = ActiveJobControl {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
+        };
+        {
+            let mut guard = self
+                .active_batches
+                .lock()
+                .expect("export active_batches lock poisoned");
+            guard.insert(batch_id.clone(), ctrl.clone());
+        }
+
+        let manager = self.clone();
+        let batch_id_spawn = batch_id.clone();
+
+        tauri::async_runtime::spawn(async move {
+            let mut completed_count = 0usize;
+            let mut failed_count = 0usize;
+            let mut last_output_path: Option<String> = None;
+            let mut cancelled = false;
+            let mut errors: Vec<BatchExportErrorItem> = Vec::new();
+            let output_dir_str = export_output_dir.to_string_lossy().to_string();
+
+            for (current_index, clip_id) in clip_ids.iter().enumerate() {
+                if ctrl.cancelled.load(Ordering::SeqCst) {
+                    cancelled = true;
+                    break;
+                }
+
+                let detail = match db.get_clip_detail(clip_id, "", "") {
+                    Ok(d) => d,
+                    Err(e) => {
+                        failed_count += 1;
+                        errors.push(BatchExportErrorItem {
+                            clip_id: clip_id.clone(),
+                            file_name: clip_id.clone(),
+                            error: e.to_string(),
+                        });
+                        let _ = app.emit(
+                            "batch_export_progress",
+                            BatchExportProgressEvent {
+                                batch_id: batch_id_spawn.clone(),
+                                current_index,
+                                total,
+                                current_clip_id: clip_id.clone(),
+                                current_file_name: clip_id.clone(),
+                                clip_percent: 100.0,
+                                completed_count,
+                                failed_count,
+                            },
+                        );
+                        continue;
+                    }
+                };
+
+                let file_name = detail.clip.file_name.clone();
+                if detail.clip.is_missing {
+                    failed_count += 1;
+                    errors.push(BatchExportErrorItem {
+                        clip_id: clip_id.clone(),
+                        file_name: file_name.clone(),
+                        error: "Clip file is missing".to_string(),
+                    });
+                    let _ = app.emit(
+                        "batch_export_progress",
+                        BatchExportProgressEvent {
+                            batch_id: batch_id_spawn.clone(),
+                            current_index,
+                            total,
+                            current_clip_id: clip_id.clone(),
+                            current_file_name: file_name,
+                            clip_percent: 100.0,
+                            completed_count,
+                            failed_count,
+                        },
+                    );
+                    continue;
+                }
+
+                let src_path = normalize_windows_path(Path::new(&detail.clip.file_path));
+                if !src_path.exists() {
+                    failed_count += 1;
+                    errors.push(BatchExportErrorItem {
+                        clip_id: clip_id.clone(),
+                        file_name: file_name.clone(),
+                        error: "Source video file not found".to_string(),
+                    });
+                    let _ = app.emit(
+                        "batch_export_progress",
+                        BatchExportProgressEvent {
+                            batch_id: batch_id_spawn.clone(),
+                            current_index,
+                            total,
+                            current_clip_id: clip_id.clone(),
+                            current_file_name: file_name,
+                            clip_percent: 100.0,
+                            completed_count,
+                            failed_count,
+                        },
+                    );
+                    continue;
+                }
+
+                let job_id = Uuid::new_v4().to_string();
+                let (start_sec, end_sec, duration_sec) =
+                    match validate_export_range(0.0, detail.clip.duration_sec, detail.clip.duration_sec, 0.5) {
+                        Ok(bounds) => bounds,
+                        Err(e) => {
+                            failed_count += 1;
+                            errors.push(BatchExportErrorItem {
+                                clip_id: clip_id.clone(),
+                                file_name: file_name.clone(),
+                                error: e.to_string(),
+                            });
+                            continue;
+                        }
+                    };
+
+                let output_path_res = if let Some(ref cp) = custom_preset {
+                    build_custom_output_path(
+                        &export_output_dir,
+                        &file_name,
+                        &cp.name,
+                        &cp.container,
+                        &job_id,
+                    )
+                } else {
+                    build_output_path(&export_output_dir, &file_name, preset, &job_id)
+                };
+
+                let output_path = match output_path_res {
+                    Ok(p) => p,
+                    Err(e) => {
+                        failed_count += 1;
+                        errors.push(BatchExportErrorItem {
+                            clip_id: clip_id.clone(),
+                            file_name: file_name.clone(),
+                            error: e.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                let output_str = output_path.to_string_lossy().to_string();
+
+                let job_preset_label = custom_preset
+                    .as_ref()
+                    .map(|cp| format!("custom:{}", cp.id))
+                    .unwrap_or_else(|| preset.as_str().to_string());
+                let _ = db.insert_export_job(
+                    &job_id,
+                    clip_id,
+                    &job_preset_label,
+                    start_sec,
+                    end_sec,
+                    &output_str,
+                );
+
+                let _ = app.emit(
+                    "batch_export_progress",
+                    BatchExportProgressEvent {
+                        batch_id: batch_id_spawn.clone(),
+                        current_index,
+                        total,
+                        current_clip_id: clip_id.clone(),
+                        current_file_name: file_name.clone(),
+                        clip_percent: 0.0,
+                        completed_count,
+                        failed_count,
+                    },
+                );
+
+                let request = StartExportRequest {
+                    clip_id: clip_id.clone(),
+                    preset,
+                    start_sec,
+                    end_sec,
+                    audio_mix: Vec::new(),
+                    copy_to_clipboard: false,
+                    aspect_mode,
+                    normalize_audio,
+                    custom_preset_id: custom_preset_id.clone(),
+                };
+
+                let app_cb = app.clone();
+                let batch_id_cb = batch_id_spawn.clone();
+                let clip_id_cb = clip_id.clone();
+                let file_name_cb = file_name.clone();
+                let progress_cb: ProgressCallback = Arc::new(move |ev: ExportProgressEvent| {
+                    let _ = app_cb.emit(
+                        "batch_export_progress",
+                        BatchExportProgressEvent {
+                            batch_id: batch_id_cb.clone(),
+                            current_index,
+                            total,
+                            current_clip_id: clip_id_cb.clone(),
+                            current_file_name: file_name_cb.clone(),
+                            clip_percent: ev.percent,
+                            completed_count,
+                            failed_count,
+                        },
+                    );
+                });
+
+                let result = execute_export_pipeline_with_custom(
+                    Some(progress_cb),
+                    &job_id,
+                    &src_path,
+                    &output_path,
+                    start_sec,
+                    duration_sec,
+                    detail.clip.height,
+                    detail.audio_tracks.len(),
+                    &request,
+                    custom_preset.as_ref(),
+                    &hw_encoders,
+                    &ctrl,
+                )
+                .await;
+
+                match result {
+                    Ok((size_bytes, encoder_used)) => {
+                        completed_count += 1;
+                        last_output_path = Some(output_str.clone());
+                        let _ = db.update_export_job_done(&job_id, size_bytes, &encoder_used);
+                    }
+                    Err(ExportRunError::Cancelled) => {
+                        cancelled = true;
+                        let _ = tokio::fs::remove_file(&output_path).await;
+                        let _ = db.update_export_job_cancelled(&job_id);
+                        break;
+                    }
+                    Err(ExportRunError::Failed(msg)) => {
+                        failed_count += 1;
+                        let _ = tokio::fs::remove_file(&output_path).await;
+                        let _ = db.update_export_job_failed(&job_id, &msg);
+                        errors.push(BatchExportErrorItem {
+                            clip_id: clip_id.clone(),
+                            file_name: file_name.clone(),
+                            error: msg,
+                        });
+                    }
+                }
+
+                let _ = app.emit(
+                    "batch_export_progress",
+                    BatchExportProgressEvent {
+                        batch_id: batch_id_spawn.clone(),
+                        current_index,
+                        total,
+                        current_clip_id: clip_id.clone(),
+                        current_file_name: file_name,
+                        clip_percent: 100.0,
+                        completed_count,
+                        failed_count,
+                    },
+                );
+            }
+
+            {
+                let mut guard = manager
+                    .active_batches
+                    .lock()
+                    .expect("export active_batches lock poisoned");
+                guard.remove(&batch_id_spawn);
+            }
+
+            let _ = app.emit(
+                "batch_export_completed",
+                BatchExportCompletedEvent {
+                    batch_id: batch_id_spawn,
+                    completed_count,
+                    failed_count,
+                    output_dir: output_dir_str,
+                    last_output_path,
+                    cancelled,
+                    errors,
+                },
+            );
+        });
+
+        Ok(BatchExportStartResult { batch_id, total })
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -522,6 +884,38 @@ pub async fn execute_export_pipeline(
     hw_encoders: &[&str],
     ctrl: &ActiveJobControl,
 ) -> Result<(i64, String), ExportRunError> {
+    execute_export_pipeline_with_custom(
+        on_progress,
+        job_id,
+        src_path,
+        out_path,
+        start_sec,
+        duration_sec,
+        src_height,
+        track_count,
+        request,
+        None,
+        hw_encoders,
+        ctrl,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_export_pipeline_with_custom(
+    on_progress: Option<ProgressCallback>,
+    job_id: &str,
+    src_path: &Path,
+    out_path: &Path,
+    start_sec: f64,
+    duration_sec: f64,
+    src_height: i32,
+    track_count: usize,
+    request: &StartExportRequest,
+    custom_preset: Option<&CustomExportPreset>,
+    hw_encoders: &[&str],
+    ctrl: &ActiveJobControl,
+) -> Result<(i64, String), ExportRunError> {
     let active_tracks: Vec<&AudioTrackMix> = request
         .audio_mix
         .iter()
@@ -532,6 +926,43 @@ pub async fn execute_export_pipeline(
     } else {
         !active_tracks.is_empty()
     };
+
+    if let Some(cp) = custom_preset {
+        let plan = cp.target_size_mb.map(|mb| {
+            calculate_target_size_bitrate(mb, duration_sec, src_height, has_active_audio)
+        });
+        let encoders_for_container: Vec<&str> = if cp.container.eq_ignore_ascii_case("webm") {
+            Vec::new()
+        } else {
+            hw_encoders.to_vec()
+        };
+
+        return run_hw_with_x264_fallback(
+            on_progress,
+            job_id,
+            out_path,
+            duration_sec,
+            None,
+            &encoders_for_container,
+            ctrl,
+            |encoder| {
+                build_custom_preset_args(
+                    src_path,
+                    out_path,
+                    start_sec,
+                    duration_sec,
+                    src_height,
+                    cp,
+                    plan.as_ref(),
+                    encoder,
+                    &request.audio_mix,
+                    track_count,
+                    request.normalize_audio,
+                )
+            },
+        )
+        .await;
+    }
 
     if request.preset == ExportPreset::LosslessTrim {
         if request.aspect_mode == AspectMode::Original {

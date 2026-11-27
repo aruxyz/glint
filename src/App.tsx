@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppModalsLayer } from "./components/AppModalsLayer";
+import { BatchExportModal } from "./components/library/BatchExportModal";
 import { UpdateModal } from "./components/UpdateModal";
 import { useAutoUpdater } from "./hooks/useAutoUpdater";
 import { EditorView } from "./components/EditorView";
@@ -16,8 +17,15 @@ import { useExportJobs } from "./hooks/useExportJobs";
 import { useLibrary } from "./hooks/useLibrary";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { api, isTauriRuntime } from "./lib/api";
-import { DEFAULT_SETTINGS } from "./lib/encoder";
-import type { NavDestination, SourceType, WatchFolder } from "./lib/types";
+import { DEFAULT_SETTINGS, getEncoderLabel } from "./lib/encoder";
+import type {
+  ClipSummary,
+  CustomExportPreset,
+  CustomPresetInput,
+  NavDestination,
+  SourceType,
+  WatchFolder,
+} from "./lib/types";
 
 export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -35,6 +43,33 @@ export default function App() {
   const [playerTrimByClipId, setPlayerTrimByClipId] = useState<
     Record<string, { startSec: number; endSec: number }>
   >({});
+  const [customPresets, setCustomPresets] = useState<CustomExportPreset[]>([]);
+  const [batchExportClips, setBatchExportClips] = useState<ClipSummary[] | null>(null);
+
+  useEffect(() => {
+    api
+      .listCustomPresets()
+      .then(setCustomPresets)
+      .catch(() => {});
+  }, []);
+
+  const handleCreateCustomPreset = useCallback(async (input: CustomPresetInput) => {
+    const created = await api.createCustomPreset(input);
+    setCustomPresets((prev) => [...prev, created]);
+  }, []);
+
+  const handleUpdateCustomPreset = useCallback(
+    async (id: string, input: CustomPresetInput) => {
+      const updated = await api.updateCustomPreset(id, input);
+      setCustomPresets((prev) => prev.map((p) => (p.id === id ? updated : p)));
+    },
+    []
+  );
+
+  const handleDeleteCustomPreset = useCallback(async (id: string) => {
+    await api.deleteCustomPreset(id);
+    setCustomPresets((prev) => prev.filter((p) => p.id !== id));
+  }, []);
 
   const handleSavePlayerTrim = useCallback(
     (clipId: string, startSec: number, endSec: number) => {
@@ -333,6 +368,10 @@ export default function App() {
           hasQsv={Boolean(bootstrap?.hasQsv)}
           hardwareEncoder={bootstrap?.hardwareEncoder ?? null}
           ffmpegAvailable={Boolean(bootstrap?.ffmpegAvailable)}
+          customPresets={customPresets}
+          onCreateCustomPreset={handleCreateCustomPreset}
+          onUpdateCustomPreset={handleUpdateCustomPreset}
+          onDeleteCustomPreset={handleDeleteCustomPreset}
           onAddWatchFolder={async (path: string, sourceType: SourceType) => {
             await api.addWatchFolder(path, sourceType);
             await api.scanWatchFolders(null).catch(() => {});
@@ -495,6 +534,11 @@ export default function App() {
               streamerToken={bootstrap?.streamerToken ?? ""}
               defaultAutoNext={currentSettings.defaultAutoNext}
               autoCopyToClipboard={currentSettings.autoCopyExportToClipboard}
+              customPresets={customPresets}
+              onOpenExportSettings={() => {
+                setSettingsTab("export");
+                setSettingsOpen(true);
+              }}
               savedTrim={playerTrimByClipId[activeClip.id] ?? null}
               onSaveTrimRange={handleSavePlayerTrim}
               onBack={() => setActiveClip(null)}
@@ -504,6 +548,7 @@ export default function App() {
                 modals.setCollectionPickerClipIds([c.id])
               }
               onEditClip={(c) => modals.setEditClipTarget(c)}
+              onCopyClipFile={actions.handleCopyClipFile}
               onRevealFile={actions.handleRevealFile}
               onDeleteClip={actions.handleDeleteClip}
               onOpenContextMenu={modals.openContextMenu}
@@ -609,6 +654,10 @@ export default function App() {
                 modals.setCollectionPickerClipIds(Array.from(selectedIds))
               }
               onBulkRemoveFromCollection={actions.handleBulkRemoveFromCollection}
+              onBulkBatchExport={() => {
+                const selected = clips.filter((c) => selectedIds.has(c.id));
+                if (selected.length > 0) setBatchExportClips(selected);
+              }}
               onBulkMerge={actions.handleOpenBulkMerge}
               onBulkDelete={actions.handleBulkDelete}
               onOpenPlayer={(c) => {
@@ -643,6 +692,7 @@ export default function App() {
               }
               onRemoveClipFromCollection={actions.handleRemoveSingleFromCollection}
               onEditClip={(c) => modals.setEditClipTarget(c)}
+              onCopyClipFile={actions.handleCopyClipFile}
               onRevealFile={actions.handleRevealFile}
               onDeleteClip={actions.handleDeleteClip}
               onOpenContextMenu={modals.openContextMenu}
@@ -695,6 +745,31 @@ export default function App() {
         onShowInFolder={exports.handleShowInFolder}
         onRetryExport25Mb={exports.handleRetryExport25Mb}
         onOpenEditor={enterEditorMode}
+      />
+
+      <BatchExportModal
+        open={batchExportClips !== null}
+        clips={batchExportClips ?? []}
+        customPresets={customPresets}
+        exportOutputDir={currentSettings.exportOutputDir}
+        encoderLabel={getEncoderLabel(
+          "discord_10mb",
+          {
+            hasNvenc: Boolean(bootstrap?.hasNvenc),
+            hasAmf: Boolean(bootstrap?.hasAmf),
+            hasQsv: Boolean(bootstrap?.hasQsv),
+            hardwareEncoder: bootstrap?.hardwareEncoder,
+          },
+          "original",
+          false
+        )}
+        streamerBaseUrl={bootstrap?.streamerBaseUrl ?? ""}
+        streamerToken={bootstrap?.streamerToken ?? ""}
+        onClose={() => setBatchExportClips(null)}
+        onOpenExportSettings={() => {
+          setSettingsTab("export");
+          setSettingsOpen(true);
+        }}
       />
 
       <UpdateModal

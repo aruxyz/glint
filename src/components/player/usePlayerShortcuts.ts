@@ -16,6 +16,7 @@ interface UsePlayerShortcutsParams {
   setEndSec: Dispatch<SetStateAction<number>>;
   setLoopActive: Dispatch<SetStateAction<boolean>>;
   onToggleMute: () => void;
+  onAddMarkerAtPlayhead: (timeSec: number) => void;
   setAspectMode: Dispatch<SetStateAction<AspectMode>>;
   showHudBriefly: () => void;
   togglePlay: () => void;
@@ -44,6 +45,7 @@ export function usePlayerShortcuts({
   setEndSec,
   setLoopActive,
   onToggleMute,
+  onAddMarkerAtPlayhead,
   setAspectMode,
   showHudBriefly,
   togglePlay,
@@ -145,6 +147,13 @@ export function usePlayerShortcuts({
       if (e.key.toLowerCase() === "m") {
         e.preventDefault();
         e.stopPropagation();
+        onAddMarkerAtPlayhead(videoRef.current?.currentTime ?? currentTime);
+        return;
+      }
+
+      if (e.key.toLowerCase() === "u") {
+        e.preventDefault();
+        e.stopPropagation();
         onToggleMute();
         return;
       }
@@ -214,6 +223,7 @@ export function usePlayerShortcuts({
     setAspectMode,
     setEndSec,
     setLoopActive,
+    onAddMarkerAtPlayhead,
     onToggleMute,
     setMixerOpen,
     setStartSec,

@@ -1,8 +1,15 @@
-import type { Dispatch, SetStateAction } from "react";
-import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { useState, type Dispatch, type SetStateAction } from "react";
+import { AlertTriangle, CheckCircle2, Pencil, Plus, Trash2 } from "lucide-react";
 import { api, isTauriRuntime } from "../../lib/api";
 import { formatHardwareEncoderLabel, getWindowsDrive } from "../../lib/format";
-import type { AppSettings, WatchFolder } from "../../lib/types";
+import { formatCustomPresetSpec } from "../../lib/presets";
+import type {
+  AppSettings,
+  CustomExportPreset,
+  CustomPresetInput,
+  WatchFolder,
+} from "../../lib/types";
+import { CustomPresetModal } from "./CustomPresetModal";
 
 export type EncoderPreference = "nvenc" | "cpu";
 
@@ -20,6 +27,10 @@ interface ExportTabProps {
   savingSettings: boolean;
   saveFeedback: string | null;
   onSaveSettings: (nextSettings: AppSettings) => Promise<void>;
+  customPresets: CustomExportPreset[];
+  onCreateCustomPreset: (input: CustomPresetInput) => Promise<void>;
+  onUpdateCustomPreset: (id: string, input: CustomPresetInput) => Promise<void>;
+  onDeleteCustomPreset: (id: string) => Promise<void>;
 }
 
 export function ExportTab({
@@ -36,7 +47,15 @@ export function ExportTab({
   savingSettings,
   saveFeedback,
   onSaveSettings,
+  customPresets,
+  onCreateCustomPreset,
+  onUpdateCustomPreset,
+  onDeleteCustomPreset,
 }: ExportTabProps) {
+  const [presetModalOpen, setPresetModalOpen] = useState(false);
+  const [editingPreset, setEditingPreset] = useState<CustomExportPreset | null>(null);
+  const [presetBusy, setPresetBusy] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const handleBrowseField = async (
     field: "hardlinkBaseDir" | "exportOutputDir",
     title: string
@@ -295,6 +314,131 @@ export function ExportTab({
           </button>
         </div>
       </div>
+
+      <div className="mt-5 rounded-[12px] border border-[var(--border-hairline)] bg-[var(--surface-card)] p-5 shadow-[var(--border-card-specular),var(--shadow-card-rest)]">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-[15px] font-semibold text-[var(--text-primary)]">
+              Custom Export Presets
+            </h2>
+            <p className="mt-0.5 text-[12px] text-[var(--text-secondary)]">
+              Reusable targets for Player export and Batch Export.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setEditingPreset(null);
+              setPresetModalOpen(true);
+            }}
+            className="btn-primary h-8 shrink-0 gap-1.5 px-3 text-[12px]"
+          >
+            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+            New Preset
+          </button>
+        </div>
+
+        {customPresets.length === 0 ? (
+          <div className="mt-4 rounded-[10px] border border-dashed border-[var(--border-hairline)] px-4 py-5 text-center text-[12px] text-[var(--text-muted)]">
+            No custom presets yet. Add one to export with custom bitrate, container, or resolution.
+          </div>
+        ) : (
+          <div className="mt-4 space-y-2">
+            {customPresets.map((preset) => (
+              <div
+                key={preset.id}
+                className="flex items-center justify-between gap-3 rounded-[10px] border border-[var(--border-hairline)] bg-[var(--surface-control)] px-3.5 py-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-semibold text-[var(--text-primary)]">
+                    {preset.name}
+                  </p>
+                  <p className="font-mono-tabular mt-0.5 truncate text-[11px] text-[var(--text-secondary)]">
+                    {formatCustomPresetSpec(preset)}
+                  </p>
+                </div>
+
+                {confirmDeleteId === preset.id ? (
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={presetBusy}
+                      onClick={async () => {
+                        setPresetBusy(true);
+                        try {
+                          await onDeleteCustomPreset(preset.id);
+                          setConfirmDeleteId(null);
+                        } finally {
+                          setPresetBusy(false);
+                        }
+                      }}
+                      className="btn-secondary h-7 px-2.5 text-[11px] text-[var(--status-error-fg)] hover:bg-[var(--status-error-bg)]"
+                    >
+                      Delete?
+                    </button>
+                    <button
+                      type="button"
+                      disabled={presetBusy}
+                      onClick={() => setConfirmDeleteId(null)}
+                      className="btn-secondary h-7 px-2 text-[11px]"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      aria-label="Edit preset"
+                      onClick={() => {
+                        setEditingPreset(preset);
+                        setPresetModalOpen(true);
+                      }}
+                      className="flex h-8 w-8 items-center justify-center rounded-[7px] text-[var(--text-secondary)] hover:bg-slate-900/5 hover:text-[var(--text-primary)]"
+                    >
+                      <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Delete preset"
+                      onClick={() => setConfirmDeleteId(preset.id)}
+                      className="flex h-8 w-8 items-center justify-center rounded-[7px] text-[var(--text-secondary)] hover:bg-[var(--status-error-bg)] hover:text-[var(--status-error-fg)]"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <CustomPresetModal
+        open={presetModalOpen}
+        initialPreset={editingPreset}
+        busy={presetBusy}
+        onClose={() => {
+          if (!presetBusy) {
+            setPresetModalOpen(false);
+            setEditingPreset(null);
+          }
+        }}
+        onSave={async (input) => {
+          setPresetBusy(true);
+          try {
+            if (editingPreset) {
+              await onUpdateCustomPreset(editingPreset.id, input);
+            } else {
+              await onCreateCustomPreset(input);
+            }
+            setPresetModalOpen(false);
+            setEditingPreset(null);
+          } finally {
+            setPresetBusy(false);
+          }
+        }}
+      />
     </section>
   );
 }

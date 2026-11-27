@@ -11,14 +11,14 @@ use crate::error::{AppError, AppResult};
 use crate::exporter::ExportManager;
 use crate::media::FfmpegCapabilities;
 use crate::models::{
-    AppSettings, AspectMode, BootstrapState, ClipDetail, ClipIdEvent, CollectionKind,
-    CollectionSummary, DeleteClipsResult, DetectNvidiaResult, DetectedRecorder,
-    EditorProjectSummary, GameSummary, HardlinkExportResult, ListClipsQuery, ListClipsResult,
-    LoadEditorProjectResult, MergeClipsRequest, ModifyCollectionClipsResult, OkResult,
-    ProbedAudioFile, QueuedCountResult, SaveEditorProjectRequest, SaveTrimmedClipRequest,
-    SetThumbnailResult, SmartRules, SnapshotResult, SourceType, StartEditorExportRequest,
-    StartExportRequest, StartExportResult, StorageCleanupPreview, StorageCleanupResult, TagItem,
-    WatchFolder,
+    AppSettings, AspectMode, BatchExportStartResult, BootstrapState, ClipDetail, ClipIdEvent,
+    ClipMarker, CollectionKind, CollectionSummary, CustomExportPreset, CustomPresetInput,
+    DeleteClipsResult, DetectNvidiaResult, DetectedRecorder, EditorProjectSummary, ExportPreset,
+    GameSummary, HardlinkExportResult, ListClipsQuery, ListClipsResult, LoadEditorProjectResult,
+    MergeClipsRequest, ModifyCollectionClipsResult, OkResult, ProbedAudioFile, QueuedCountResult,
+    SaveEditorProjectRequest, SaveTrimmedClipRequest, SetThumbnailResult, SmartRules,
+    SnapshotResult, SourceType, StartEditorExportRequest, StartExportRequest, StartExportResult,
+    StorageCleanupPreview, StorageCleanupResult, TagItem, WatchFolder,
 };
 use crate::paths::{normalize_windows_path, AppPaths};
 use crate::win;
@@ -599,4 +599,112 @@ pub async fn pick_audio_file(app: AppHandle) -> AppResult<Option<String>> {
 #[tauri::command]
 pub async fn probe_audio_file(file_path: String) -> AppResult<ProbedAudioFile> {
     crate::media::probe_audio_file(Path::new(&file_path)).await
+}
+
+#[tauri::command]
+pub fn list_clip_markers(state: State<'_, AppState>, clip_id: String) -> AppResult<Vec<ClipMarker>> {
+    state.db.list_clip_markers(&clip_id)
+}
+
+#[tauri::command]
+pub fn create_clip_marker(
+    state: State<'_, AppState>,
+    clip_id: String,
+    time_sec: f64,
+    label: String,
+    color: Option<String>,
+) -> AppResult<ClipMarker> {
+    state
+        .db
+        .create_clip_marker(&clip_id, time_sec, &label, color.as_deref())
+}
+
+#[tauri::command]
+pub fn update_clip_marker(
+    state: State<'_, AppState>,
+    id: String,
+    label: Option<String>,
+    color: Option<String>,
+    time_sec: Option<f64>,
+) -> AppResult<ClipMarker> {
+    state
+        .db
+        .update_clip_marker(&id, label.as_deref(), color.as_deref(), time_sec)
+}
+
+#[tauri::command]
+pub fn delete_clip_marker(state: State<'_, AppState>, id: String) -> AppResult<OkResult> {
+    let ok = state.db.delete_clip_marker(&id)?;
+    Ok(OkResult { ok })
+}
+
+#[tauri::command]
+pub fn list_custom_presets(state: State<'_, AppState>) -> AppResult<Vec<CustomExportPreset>> {
+    state.db.list_custom_presets()
+}
+
+#[tauri::command]
+pub fn create_custom_preset(
+    state: State<'_, AppState>,
+    input: CustomPresetInput,
+) -> AppResult<CustomExportPreset> {
+    state.db.create_custom_preset(&input)
+}
+
+#[tauri::command]
+pub fn update_custom_preset(
+    state: State<'_, AppState>,
+    id: String,
+    input: CustomPresetInput,
+) -> AppResult<CustomExportPreset> {
+    state.db.update_custom_preset(&id, &input)
+}
+
+#[tauri::command]
+pub fn delete_custom_preset(state: State<'_, AppState>, id: String) -> AppResult<OkResult> {
+    let ok = state.db.delete_custom_preset(&id)?;
+    Ok(OkResult { ok })
+}
+
+#[tauri::command]
+pub fn start_batch_export(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clip_ids: Vec<String>,
+    preset: ExportPreset,
+    custom_preset_id: Option<String>,
+    audio_normalize: bool,
+    stretch_16_9: bool,
+) -> AppResult<BatchExportStartResult> {
+    if !state.capabilities.available {
+        return Err(AppError::Process(
+            "ffmpeg is not installed or unavailable on PATH".to_string(),
+        ));
+    }
+    let settings = state.db.get_settings(&state.paths.default_settings())?;
+    let export_dir =
+        resolve_export_output_dir(&settings.export_output_dir, &state.paths.default_export_dir);
+    let hw_encoders = state.capabilities.hardware_encoders();
+    let aspect_mode = if stretch_16_9 {
+        AspectMode::Stretch169
+    } else {
+        AspectMode::Original
+    };
+    state.exporter.start_batch_export_job(
+        app,
+        state.db.clone(),
+        clip_ids,
+        preset,
+        custom_preset_id,
+        aspect_mode,
+        audio_normalize,
+        export_dir,
+        hw_encoders,
+    )
+}
+
+#[tauri::command]
+pub fn cancel_batch_export(state: State<'_, AppState>, batch_id: String) -> AppResult<OkResult> {
+    let ok = state.exporter.cancel_batch_job(&batch_id);
+    Ok(OkResult { ok })
 }

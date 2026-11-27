@@ -650,6 +650,7 @@ async fn qa_end_to_end_media_streamer_hardlink_and_nvenc_export() {
         copy_to_clipboard: false,
         aspect_mode: AspectMode::Original,
         normalize_audio: true,
+        custom_preset_id: None,
     };
     let (v_size, v_enc) = execute_export_pipeline(
         None,

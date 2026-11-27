@@ -9,6 +9,7 @@ src-tauri/binaries/*.exe
 
 # Separate website repo, never part of the public app repo
 website/
+promo-video/
 
 # Environment
 .env

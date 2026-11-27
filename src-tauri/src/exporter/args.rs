@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::models::{AspectMode, AudioTrackMix, ExportPreset};
+use crate::models::{AspectMode, AudioTrackMix, CustomExportPreset, ExportPreset};
 
 pub(crate) const LOUDNORM_FILTER: &str = "loudnorm=I=-16:TP=-1.5:LRA=11";
 
@@ -33,7 +33,21 @@ pub fn calculate_discord_bitrate(
         | ExportPreset::VerticalBlur916
         | ExportPreset::VerticalCrop916 => return None,
     };
+    Some(calculate_target_size_bitrate(
+        effective_mb,
+        duration_sec,
+        src_height,
+        has_active_audio,
+    ))
+}
 
+pub fn calculate_target_size_bitrate(
+    target_mb: f64,
+    duration_sec: f64,
+    src_height: i32,
+    has_active_audio: bool,
+) -> BitratePlan {
+    let effective_mb = target_mb.max(0.5);
     let d = duration_sec.max(0.5);
     let audio_kbps = if !has_active_audio {
         0
@@ -49,14 +63,14 @@ pub fn calculate_discord_bitrate(
     let too_long_warning = raw_video_kbps < 600;
     let video_kbps = raw_video_kbps.max(150);
 
-    Some(BitratePlan {
+    BitratePlan {
         effective_mb,
         duration_sec: d,
         video_kbps,
         audio_kbps,
         downscale_720p,
         too_long_warning,
-    })
+    }
 }
 
 pub fn discord_limit_bytes(preset: ExportPreset) -> Option<i64> {
@@ -509,6 +523,149 @@ pub fn build_save_trim_args(
         normalize_audio,
         false,
     )
+}
+
+fn custom_preset_video_mode(preset: &CustomExportPreset, src_height: i32) -> VideoFilterMode {
+    match preset.resolution.as_str() {
+        "vertical_blur_9_16" => VideoFilterMode::VerticalBlur916 {
+            stretch_fg: preset.stretch_16_9,
+        },
+        "vertical_crop_9_16" => {
+            let vf = if preset.stretch_16_9 {
+                "scale=1920:1080,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1"
+            } else {
+                "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1"
+            };
+            VideoFilterMode::SimpleVf(vf.to_string())
+        }
+        "1080p" => {
+            let vf = if preset.stretch_16_9 {
+                "scale=1920:1080,setsar=1"
+            } else {
+                "scale=-2:1080"
+            };
+            VideoFilterMode::SimpleVf(vf.to_string())
+        }
+        "720p" => {
+            let vf = if preset.stretch_16_9 {
+                "scale=1280:720,setsar=1"
+            } else {
+                "scale=-2:720"
+            };
+            VideoFilterMode::SimpleVf(vf.to_string())
+        }
+        _ => {
+            if preset.stretch_16_9 {
+                let (w, h) = compute_stretch_16_9_dims(src_height, false);
+                VideoFilterMode::SimpleVf(format!("scale={w}:{h},setsar=1"))
+            } else {
+                VideoFilterMode::None
+            }
+        }
+    }
+}
+
+fn replace_audio_codec_for_webm(args: &mut [String]) {
+    for idx in 0..args.len().saturating_sub(1) {
+        if args[idx] == "-c:a" && args[idx + 1] == "aac" {
+            args[idx + 1] = "libopus".to_string();
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_custom_preset_args(
+    src_path: &Path,
+    out_path: &Path,
+    start_sec: f64,
+    duration_sec: f64,
+    src_height: i32,
+    preset: &CustomExportPreset,
+    plan: Option<&BitratePlan>,
+    encoder: &str,
+    audio_mix: &[AudioTrackMix],
+    track_count: usize,
+    request_normalize_audio: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        "-y".to_string(),
+        "-ss".to_string(),
+        format!("{start_sec:.3}"),
+        "-i".to_string(),
+        src_path.to_string_lossy().to_string(),
+        "-t".to_string(),
+        format!("{duration_sec:.3}"),
+    ];
+
+    let is_webm = preset.container.eq_ignore_ascii_case("webm");
+    let is_mp4 = preset.container.eq_ignore_ascii_case("mp4");
+    let audio_kbps = plan.map(|p| p.audio_kbps.max(96)).unwrap_or(192);
+    let normalize = request_normalize_audio || preset.audio_normalize;
+    let video_mode = custom_preset_video_mode(preset, src_height);
+
+    append_video_and_audio_filters(
+        &mut args,
+        video_mode,
+        audio_mix,
+        track_count,
+        audio_kbps,
+        normalize,
+        false,
+    );
+
+    if is_webm {
+        replace_audio_codec_for_webm(&mut args);
+    }
+
+    if preset.fps == "60" || preset.fps == "30" {
+        args.extend(["-r".to_string(), preset.fps.clone()]);
+    }
+
+    if is_webm {
+        args.extend([
+            "-c:v".to_string(),
+            "libvpx-vp9".to_string(),
+            "-row-mt".to_string(),
+            "1".to_string(),
+        ]);
+        if let Some(p) = plan {
+            args.extend(["-b:v".to_string(), format!("{}k", p.video_kbps)]);
+        } else if let Some(kbps) = preset.video_bitrate_kbps {
+            args.extend(["-b:v".to_string(), format!("{kbps}k")]);
+        } else {
+            args.extend([
+                "-crf".to_string(),
+                "30".to_string(),
+                "-b:v".to_string(),
+                "0".to_string(),
+            ]);
+        }
+    } else if let Some(p) = plan {
+        append_bitrate_video_encoder_args(&mut args, p, encoder);
+    } else if let Some(kbps) = preset.video_bitrate_kbps {
+        let manual_plan = BitratePlan {
+            effective_mb: 0.0,
+            duration_sec,
+            video_kbps: kbps,
+            audio_kbps,
+            downscale_720p: false,
+            too_long_warning: false,
+        };
+        append_bitrate_video_encoder_args(&mut args, &manual_plan, encoder);
+    } else {
+        append_hq_video_encoder_args(&mut args, encoder, 20, 20);
+    }
+
+    if is_mp4 {
+        args.extend(["-movflags".to_string(), "+faststart".to_string()]);
+    }
+    args.extend([
+        "-progress".to_string(),
+        "pipe:1".to_string(),
+        "-nostats".to_string(),
+        out_path.to_string_lossy().to_string(),
+    ]);
+    args
 }
 
 fn append_video_and_audio_filters(
@@ -1120,5 +1277,70 @@ mod tests {
         );
         assert!(qsv_hq.windows(2).any(|w| w == ["-preset", "medium"]));
         assert!(qsv_hq.windows(2).any(|w| w == ["-global_quality", "19"]));
+    }
+
+    #[test]
+    fn builds_custom_preset_args_for_mp4_mkv_and_webm() {
+        let mp4_preset = CustomExportPreset {
+            id: "cp-1".to_string(),
+            name: "YT 1080p60".to_string(),
+            container: "mp4".to_string(),
+            target_size_mb: None,
+            video_bitrate_kbps: Some(8500),
+            resolution: "1080p".to_string(),
+            fps: "60".to_string(),
+            audio_normalize: true,
+            stretch_16_9: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let mp4_args = build_custom_preset_args(
+            Path::new(r"C:\src.mp4"),
+            Path::new(r"C:\out.mp4"),
+            1.0,
+            10.0,
+            1080,
+            &mp4_preset,
+            None,
+            "h264_nvenc",
+            &[],
+            1,
+            false,
+        );
+        assert!(mp4_args.windows(2).any(|w| w == ["-vf", "scale=1920:1080,setsar=1"]));
+        assert!(mp4_args.windows(2).any(|w| w == ["-r", "60"]));
+        assert!(mp4_args.windows(2).any(|w| w == ["-b:v", "8500k"]));
+        assert!(mp4_args.windows(2).any(|w| w == ["-movflags", "+faststart"]));
+
+        let webm_preset = CustomExportPreset {
+            id: "cp-2".to_string(),
+            name: "WebM Vertical".to_string(),
+            container: "webm".to_string(),
+            target_size_mb: None,
+            video_bitrate_kbps: None,
+            resolution: "vertical_crop_9_16".to_string(),
+            fps: "30".to_string(),
+            audio_normalize: false,
+            stretch_16_9: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let webm_args = build_custom_preset_args(
+            Path::new(r"C:\src.mp4"),
+            Path::new(r"C:\out.webm"),
+            0.0,
+            8.0,
+            1080,
+            &webm_preset,
+            None,
+            "libx264",
+            &[],
+            1,
+            false,
+        );
+        assert!(webm_args.windows(2).any(|w| w == ["-c:v", "libvpx-vp9"]));
+        assert!(webm_args.windows(2).any(|w| w == ["-c:a", "libopus"]));
+        assert!(webm_args.windows(2).any(|w| w == ["-r", "30"]));
+        assert!(!webm_args.iter().any(|a| a == "+faststart"));
     }
 }

@@ -389,6 +389,8 @@ pub struct StartExportRequest {
     pub aspect_mode: AspectMode,
     #[serde(default)]
     pub normalize_audio: bool,
+    #[serde(default)]
+    pub custom_preset_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -817,6 +819,89 @@ pub struct LoadEditorProjectResult {
     pub project: EditorProjectDetail,
     pub missing_segments: Vec<MissingProjectSegment>,
     pub missing_audio_layers: Vec<MissingProjectAudioLayer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipMarker {
+    pub id: String,
+    pub clip_id: String,
+    pub time_sec: f64,
+    pub label: String,
+    pub color: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomExportPreset {
+    pub id: String,
+    pub name: String,
+    pub container: String,
+    pub target_size_mb: Option<f64>,
+    pub video_bitrate_kbps: Option<i64>,
+    pub resolution: String,
+    pub fps: String,
+    pub audio_normalize: bool,
+    #[serde(rename = "stretch169")]
+    pub stretch_16_9: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomPresetInput {
+    pub name: String,
+    pub container: String,
+    pub target_size_mb: Option<f64>,
+    pub video_bitrate_kbps: Option<i64>,
+    pub resolution: String,
+    pub fps: String,
+    #[serde(default)]
+    pub audio_normalize: bool,
+    #[serde(default, rename = "stretch169")]
+    pub stretch_16_9: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchExportStartResult {
+    pub batch_id: String,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchExportErrorItem {
+    pub clip_id: String,
+    pub file_name: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchExportProgressEvent {
+    pub batch_id: String,
+    pub current_index: usize,
+    pub total: usize,
+    pub current_clip_id: String,
+    pub current_file_name: String,
+    pub clip_percent: f64,
+    pub completed_count: usize,
+    pub failed_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchExportCompletedEvent {
+    pub batch_id: String,
+    pub completed_count: usize,
+    pub failed_count: usize,
+    pub output_dir: String,
+    pub last_output_path: Option<String>,
+    pub cancelled: bool,
+    pub errors: Vec<BatchExportErrorItem>,
 }
 
 #[cfg(test)]

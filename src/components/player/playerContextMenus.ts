@@ -1,6 +1,7 @@
 import {
   BookmarkPlus,
   Camera,
+  Copy,
   FolderOpen,
   FolderPlus,
   Image as ImageIcon,
@@ -21,6 +22,7 @@ export function buildQueueContextMenuEntries(params: {
   onOpenCollectionPicker: (clip: ClipSummary) => void;
   onToggleFavorite: (clip: ClipSummary) => void;
   onEditClip: (clip: ClipSummary) => void;
+  onCopyClipFile: (clip: ClipSummary) => void;
   onRevealFile: (clip: ClipSummary) => void;
   onDeleteClip: (clip: ClipSummary) => void;
 }): ContextMenuEntry[] {
@@ -31,6 +33,7 @@ export function buildQueueContextMenuEntries(params: {
     onOpenCollectionPicker,
     onToggleFavorite,
     onEditClip,
+    onCopyClipFile,
     onRevealFile,
     onDeleteClip,
   } = params;
@@ -65,6 +68,13 @@ export function buildQueueContextMenuEntries(params: {
       onSelect: () => onEditClip(item),
     },
     {
+      id: "queue-copy-file",
+      label: "Copy File",
+      icon: Copy,
+      disabled: item.isMissing || !isTauriRuntime(),
+      onSelect: () => onCopyClipFile(item),
+    },
+    {
       id: "queue-reveal",
       label: "Reveal Original File",
       icon: FolderOpen,
@@ -93,6 +103,7 @@ export function buildPlayerStageContextMenuEntries(params: {
   onSnapshot: () => void;
   onToggleFavorite: (clip: ClipSummary) => void;
   onEditClip: (clip: ClipSummary) => void;
+  onCopyOriginalFile: () => void;
   onRevealFile: (clip: ClipSummary) => void;
   onDeleteClip: (clip: ClipSummary) => void;
 }): ContextMenuEntry[] {
@@ -108,6 +119,7 @@ export function buildPlayerStageContextMenuEntries(params: {
     onSnapshot,
     onToggleFavorite,
     onEditClip,
+    onCopyOriginalFile,
     onRevealFile,
     onDeleteClip,
   } = params;
@@ -164,6 +176,13 @@ export function buildPlayerStageContextMenuEntries(params: {
       label: "Edit Title & Tags",
       icon: Pencil,
       onSelect: () => onEditClip(clip),
+    },
+    {
+      id: "player-copy-file",
+      label: "Copy Original File",
+      icon: Copy,
+      disabled: clip.isMissing || !inTauri,
+      onSelect: onCopyOriginalFile,
     },
     {
       id: "player-reveal",

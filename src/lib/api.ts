@@ -3,13 +3,19 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   AppSettings,
+  BatchExportCompletedPayload,
+  BatchExportProgressPayload,
+  BatchExportStartResult,
   BootstrapState,
   CaptureFrameSnapshotRequest,
   CaptureFrameSnapshotResult,
   ClipDetail,
   ClipEventPayload,
+  ClipMarker,
   CollectionKind,
   CollectionSummary,
+  CustomExportPreset,
+  CustomPresetInput,
   DetectedRecorder,
   DetectNvidiaResult,
   EditorProjectPayload,
@@ -18,12 +24,14 @@ import type {
   EditorSegment,
   ExportCompletedPayload,
   ExportFailedPayload,
+  ExportPreset,
   ExportProgressPayload,
   GameSummary,
   HardlinkExportResult,
   ListClipsQuery,
   ListClipsResult,
   LoadEditorProjectResult,
+  MarkerColor,
   MergeClipsRequest,
   MissingProjectAudioLayer,
   MissingProjectSegment,
@@ -65,6 +73,27 @@ const browserState: {
 
 const browserAudioTitles = new Map<string, string>();
 const BROWSER_EDITOR_PROJECTS_KEY = "glint_browser_editor_projects_v1";
+const BROWSER_MARKERS_KEY = "glint_browser_clip_markers_v1";
+const BROWSER_PRESETS_KEY = "glint_browser_custom_presets_v1";
+
+function readBrowserStorageArray<T>(key: string): T[] {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeBrowserStorageArray<T>(key: string, items: T[]): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(items));
+  } catch {
+    // Ignore storage write failures.
+  }
+}
 
 interface StoredBrowserEditorProject {
   id: string;
@@ -688,6 +717,158 @@ export const api = {
     return invoke<{ ok: boolean }>("copy_file_to_clipboard", { filePath });
   },
 
+  async listClipMarkers(clipId: string): Promise<ClipMarker[]> {
+    if (!isTauriRuntime()) {
+      return readBrowserStorageArray<ClipMarker>(BROWSER_MARKERS_KEY)
+        .filter((m) => m.clipId === clipId)
+        .sort((a, b) => a.timeSec - b.timeSec);
+    }
+    return invoke<ClipMarker[]>("list_clip_markers", { clipId });
+  },
+
+  async createClipMarker(params: {
+    clipId: string;
+    timeSec: number;
+    label: string;
+    color?: MarkerColor;
+  }): Promise<ClipMarker> {
+    if (!isTauriRuntime()) {
+      const created: ClipMarker = {
+        id: makeId("marker"),
+        clipId: params.clipId,
+        timeSec: params.timeSec,
+        label: params.label,
+        color: params.color ?? "blue",
+        createdAt: new Date().toISOString(),
+      };
+      const all = readBrowserStorageArray<ClipMarker>(BROWSER_MARKERS_KEY);
+      all.push(created);
+      writeBrowserStorageArray(BROWSER_MARKERS_KEY, all);
+      return created;
+    }
+    return invoke<ClipMarker>("create_clip_marker", {
+      clipId: params.clipId,
+      timeSec: params.timeSec,
+      label: params.label,
+      color: params.color ?? null,
+    });
+  },
+
+  async updateClipMarker(params: {
+    id: string;
+    label?: string;
+    color?: MarkerColor;
+    timeSec?: number;
+  }): Promise<ClipMarker> {
+    if (!isTauriRuntime()) {
+      const all = readBrowserStorageArray<ClipMarker>(BROWSER_MARKERS_KEY);
+      const idx = all.findIndex((m) => m.id === params.id);
+      if (idx < 0) throw new Error("Marker not found");
+      const updated: ClipMarker = {
+        ...all[idx],
+        label: params.label ?? all[idx].label,
+        color: params.color ?? all[idx].color,
+        timeSec: params.timeSec ?? all[idx].timeSec,
+      };
+      all[idx] = updated;
+      writeBrowserStorageArray(BROWSER_MARKERS_KEY, all);
+      return updated;
+    }
+    return invoke<ClipMarker>("update_clip_marker", {
+      id: params.id,
+      label: params.label ?? null,
+      color: params.color ?? null,
+      timeSec: params.timeSec ?? null,
+    });
+  },
+
+  async deleteClipMarker(id: string): Promise<{ ok: boolean }> {
+    if (!isTauriRuntime()) {
+      const next = readBrowserStorageArray<ClipMarker>(BROWSER_MARKERS_KEY).filter(
+        (m) => m.id !== id
+      );
+      writeBrowserStorageArray(BROWSER_MARKERS_KEY, next);
+      return { ok: true };
+    }
+    return invoke<{ ok: boolean }>("delete_clip_marker", { id });
+  },
+
+  async listCustomPresets(): Promise<CustomExportPreset[]> {
+    if (!isTauriRuntime()) {
+      return readBrowserStorageArray<CustomExportPreset>(BROWSER_PRESETS_KEY);
+    }
+    return invoke<CustomExportPreset[]>("list_custom_presets", {});
+  },
+
+  async createCustomPreset(input: CustomPresetInput): Promise<CustomExportPreset> {
+    if (!isTauriRuntime()) {
+      const now = new Date().toISOString();
+      const created: CustomExportPreset = {
+        id: makeId("preset"),
+        ...input,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const all = readBrowserStorageArray<CustomExportPreset>(BROWSER_PRESETS_KEY);
+      all.push(created);
+      writeBrowserStorageArray(BROWSER_PRESETS_KEY, all);
+      return created;
+    }
+    return invoke<CustomExportPreset>("create_custom_preset", { input });
+  },
+
+  async updateCustomPreset(
+    id: string,
+    input: CustomPresetInput
+  ): Promise<CustomExportPreset> {
+    if (!isTauriRuntime()) {
+      const all = readBrowserStorageArray<CustomExportPreset>(BROWSER_PRESETS_KEY);
+      const idx = all.findIndex((p) => p.id === id);
+      if (idx < 0) throw new Error("Preset not found");
+      const updated: CustomExportPreset = {
+        ...all[idx],
+        ...input,
+        updatedAt: new Date().toISOString(),
+      };
+      all[idx] = updated;
+      writeBrowserStorageArray(BROWSER_PRESETS_KEY, all);
+      return updated;
+    }
+    return invoke<CustomExportPreset>("update_custom_preset", { id, input });
+  },
+
+  async deleteCustomPreset(id: string): Promise<{ ok: boolean }> {
+    if (!isTauriRuntime()) {
+      const next = readBrowserStorageArray<CustomExportPreset>(BROWSER_PRESETS_KEY).filter(
+        (p) => p.id !== id
+      );
+      writeBrowserStorageArray(BROWSER_PRESETS_KEY, next);
+      return { ok: true };
+    }
+    return invoke<{ ok: boolean }>("delete_custom_preset", { id });
+  },
+
+  async startBatchExport(params: {
+    clipIds: string[];
+    preset: ExportPreset;
+    customPresetId?: string | null;
+    audioNormalize: boolean;
+    stretch169: boolean;
+  }): Promise<BatchExportStartResult> {
+    return invoke<BatchExportStartResult>("start_batch_export", {
+      clipIds: params.clipIds,
+      preset: params.preset,
+      customPresetId: params.customPresetId ?? null,
+      audioNormalize: params.audioNormalize,
+      stretch169: params.stretch169,
+    });
+  },
+
+  async cancelBatchExport(batchId: string): Promise<{ ok: boolean }> {
+    if (!isTauriRuntime()) return { ok: true };
+    return invoke<{ ok: boolean }>("cancel_batch_export", { batchId });
+  },
+
   async openInExplorer(filePath: string): Promise<{ ok: boolean }> {
     return invoke<{ ok: boolean }>("open_in_explorer", { filePath });
   },
@@ -815,6 +996,8 @@ export interface AppEventHandlers {
   onExportProgress?: (payload: ExportProgressPayload) => void;
   onExportCompleted?: (payload: ExportCompletedPayload) => void;
   onExportFailed?: (payload: ExportFailedPayload) => void;
+  onBatchExportProgress?: (payload: BatchExportProgressPayload) => void;
+  onBatchExportCompleted?: (payload: BatchExportCompletedPayload) => void;
 }
 
 export async function subscribeAppEvents(handlers: AppEventHandlers): Promise<() => void> {
@@ -855,6 +1038,20 @@ export async function subscribeAppEvents(handlers: AppEventHandlers): Promise<()
     unlisteners.push(
       await listen<ExportFailedPayload>("export:failed", (e) =>
         handlers.onExportFailed?.(e.payload)
+      )
+    );
+  }
+  if (handlers.onBatchExportProgress) {
+    unlisteners.push(
+      await listen<BatchExportProgressPayload>("batch_export_progress", (e) =>
+        handlers.onBatchExportProgress?.(e.payload)
+      )
+    );
+  }
+  if (handlers.onBatchExportCompleted) {
+    unlisteners.push(
+      await listen<BatchExportCompletedPayload>("batch_export_completed", (e) =>
+        handlers.onBatchExportCompleted?.(e.payload)
       )
     );
   }
@@ -931,4 +1128,25 @@ export function getLocalAudioStreamUrl(
     return filePath;
   }
   return buildStreamerUrl(baseUrl, token, `/local-audio?path=${encodeURIComponent(filePath)}`);
+}
+
+export function getLocalAudioWaveformUrl(
+  baseUrl: string,
+  token: string,
+  filePath: string
+): string {
+  if (
+    !baseUrl ||
+    !filePath ||
+    filePath.startsWith("blob:") ||
+    filePath.startsWith("data:") ||
+    /^https?:\/\//i.test(filePath)
+  ) {
+    return "";
+  }
+  return buildStreamerUrl(
+    baseUrl,
+    token,
+    `/local-audio-waveform?path=${encodeURIComponent(filePath)}`
+  );
 }

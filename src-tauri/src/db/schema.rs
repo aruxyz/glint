@@ -152,6 +152,34 @@ CREATE INDEX IF NOT EXISTS idx_editor_projects_updated
     ON editor_projects(updated_at DESC);
 "#;
 
+const MIGRATION_V4: &str = r#"
+CREATE TABLE IF NOT EXISTS clip_markers (
+    id TEXT PRIMARY KEY,
+    clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+    time_sec REAL NOT NULL,
+    label TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '#2563EB',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_clip_markers_clip_time
+    ON clip_markers(clip_id, time_sec ASC);
+
+CREATE TABLE IF NOT EXISTS custom_export_presets (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    container TEXT NOT NULL DEFAULT 'mp4',
+    target_size_mb REAL,
+    video_bitrate_kbps INTEGER,
+    resolution TEXT NOT NULL DEFAULT 'source',
+    fps TEXT NOT NULL DEFAULT 'source',
+    audio_normalize INTEGER NOT NULL DEFAULT 0,
+    stretch_16_9 INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"#;
+
 pub fn run_migrations(conn: &Connection) -> AppResult<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
@@ -208,6 +236,22 @@ pub fn run_migrations(conn: &Connection) -> AppResult<()> {
         tx.execute_batch(MIGRATION_V3)?;
         tx.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (3, ?1)",
+            [Utc::now().to_rfc3339()],
+        )?;
+        tx.commit()?;
+    }
+
+    let v4_applied: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 4",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if v4_applied == 0 {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(MIGRATION_V4)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (4, ?1)",
             [Utc::now().to_rfc3339()],
         )?;
         tx.commit()?;
@@ -284,5 +328,76 @@ mod tests {
             )
             .expect("insert extended source_type after v2");
         }
+    }
+
+    #[test]
+    fn migration_v4_creates_clip_markers_and_custom_export_presets() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        run_migrations(&conn).expect("run all migrations");
+        run_migrations(&conn).expect("idempotent re-run");
+
+        let v4_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 4",
+                [],
+                |r| r.get(0),
+            )
+            .expect("check v4 row");
+        assert_eq!(v4_count, 1);
+
+        conn.execute(
+            "INSERT INTO clips (
+                id, file_path, file_name, file_size_bytes, file_mtime,
+                source_type, recorded_at, duration_sec, width, height, fps, video_codec,
+                indexed_at
+            ) VALUES (
+                'clip-1', 'C:\\Clips\\c1.mp4', 'c1.mp4', 1000, 1000,
+                'custom', '2026-01-01T00:00:00Z', 10.0, 1920, 1080, 60.0, 'h264',
+                '2026-01-01T00:00:00Z'
+            )",
+            [],
+        )
+        .expect("insert clip");
+
+        conn.execute(
+            "INSERT INTO clip_markers (id, clip_id, time_sec, label, created_at)
+             VALUES ('m-1', 'clip-1', 2.5, 'Clutch', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert marker with default color");
+
+        let color: String = conn
+            .query_row(
+                "SELECT color FROM clip_markers WHERE id = 'm-1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read default marker color");
+        assert_eq!(color, "#2563EB");
+
+        conn.execute("DELETE FROM clips WHERE id = 'clip-1'", [])
+            .expect("delete clip");
+        let remaining_markers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM clip_markers", [], |r| r.get(0))
+            .expect("count markers after cascade");
+        assert_eq!(remaining_markers, 0);
+
+        conn.execute(
+            "INSERT INTO custom_export_presets (id, name, created_at, updated_at)
+             VALUES ('p-1', 'YouTube 1080p', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert custom preset with defaults");
+
+        let (container, resolution, fps): (String, String, String) = conn
+            .query_row(
+                "SELECT container, resolution, fps FROM custom_export_presets WHERE id = 'p-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("read custom preset defaults");
+        assert_eq!(container, "mp4");
+        assert_eq!(resolution, "source");
+        assert_eq!(fps, "source");
     }
 }

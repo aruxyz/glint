@@ -35,6 +35,39 @@ pub fn build_output_path(
     resolve_unique_output_path(export_dir, &base, "mp4")
 }
 
+pub fn build_custom_output_path(
+    export_dir: &Path,
+    original_file_name: &str,
+    preset_name: &str,
+    container: &str,
+    job_id: &str,
+) -> AppResult<PathBuf> {
+    let raw_stem = Path::new(original_file_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("glint_clip");
+    let stem = sanitize_filename_stem(raw_stem, "glint_clip");
+    let preset_slug = sanitize_filename_stem(preset_name, "custom")
+        .replace(' ', "_")
+        .to_ascii_lowercase();
+    let short_id: String = job_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(6)
+        .collect();
+    let ext = match container.trim().to_ascii_lowercase().as_str() {
+        "mkv" => "mkv",
+        "webm" => "webm",
+        _ => "mp4",
+    };
+    let base = if short_id.is_empty() {
+        format!("{stem}_{preset_slug}")
+    } else {
+        format!("{stem}_{preset_slug}_{short_id}")
+    };
+    resolve_unique_output_path(export_dir, &base, ext)
+}
+
 pub fn build_merge_output_path(
     export_dir: &Path,
     output_name: Option<&str>,

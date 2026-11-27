@@ -1,5 +1,6 @@
 import { useMemo, useRef } from "react";
 import {
+  Copy,
   FolderMinus,
   FolderOpen,
   FolderPlus,
@@ -8,6 +9,7 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
+import { isTauriRuntime } from "../lib/api";
 import type { ContextMenuEntry } from "./ContextMenu";
 import { BulkActionBar } from "./library/BulkActionBar";
 import { LibraryGrid } from "./library/LibraryGrid";
@@ -64,6 +66,7 @@ interface LibraryViewProps {
   onClearSelection: () => void;
   onBulkAddToCollection: () => void;
   onBulkRemoveFromCollection: (collection: CollectionSummary) => void;
+  onBulkBatchExport: () => void;
   onBulkMerge: () => void;
   onBulkDelete: () => void;
   onOpenPlayer: (clip: ClipSummary) => void;
@@ -81,6 +84,7 @@ interface LibraryViewProps {
   onOpenCollectionPicker: (clip: ClipSummary) => void;
   onRemoveClipFromCollection: (clip: ClipSummary, collection: CollectionSummary) => void;
   onEditClip: (clip: ClipSummary) => void;
+  onCopyClipFile: (clip: ClipSummary) => void;
   onRevealFile: (clip: ClipSummary) => void;
   onDeleteClip: (clip: ClipSummary) => void;
   onOpenContextMenu: (x: number, y: number, entries: ContextMenuEntry[]) => void;
@@ -122,6 +126,7 @@ export function LibraryView({
   onClearSelection,
   onBulkAddToCollection,
   onBulkRemoveFromCollection,
+  onBulkBatchExport,
   onBulkMerge,
   onBulkDelete,
   onOpenPlayer,
@@ -139,6 +144,7 @@ export function LibraryView({
   onOpenCollectionPicker,
   onRemoveClipFromCollection,
   onEditClip,
+  onCopyClipFile,
   onRevealFile,
   onDeleteClip,
   onOpenContextMenu,
@@ -247,6 +253,13 @@ export function LibraryView({
         onSelect: () => onEditClip(clip),
       },
       {
+        id: "copy-file",
+        label: "Copy File",
+        icon: Copy,
+        disabled: clip.isMissing || !isTauriRuntime(),
+        onSelect: () => onCopyClipFile(clip),
+      },
+      {
         id: "reveal-file",
         label: "Reveal Original File",
         icon: FolderOpen,
@@ -352,6 +365,7 @@ export function LibraryView({
         onClearSelection={onClearSelection}
         onBulkAddToCollection={onBulkAddToCollection}
         onBulkRemoveFromCollection={onBulkRemoveFromCollection}
+        onBulkBatchExport={onBulkBatchExport}
         onBulkMerge={onBulkMerge}
         onBulkDelete={onBulkDelete}
       />

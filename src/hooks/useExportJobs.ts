@@ -139,6 +139,7 @@ export function useExportJobs({
     async ({
       clip,
       preset,
+      customPresetId,
       startSec,
       endSec,
       audioMix,
@@ -148,6 +149,7 @@ export function useExportJobs({
     }: {
       clip: ClipSummary;
       preset: ExportPreset;
+      customPresetId?: string | null;
       startSec: number;
       endSec: number;
       audioMix: AudioTrackMix[];
@@ -158,6 +160,7 @@ export function useExportJobs({
       const res = await api.startExport({
         clipId: clip.id,
         preset,
+        customPresetId: customPresetId ?? null,
         startSec,
         endSec,
         audioMix,

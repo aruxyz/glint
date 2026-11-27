@@ -4,7 +4,13 @@ import { ExportTab, type EncoderPreference } from "./settings/ExportTab";
 import { ShortcutsTab } from "./settings/ShortcutsTab";
 import { StorageTab } from "./settings/StorageTab";
 import { WatchFoldersTab } from "./settings/WatchFoldersTab";
-import type { AppSettings, SourceType, WatchFolder } from "../lib/types";
+import type {
+  AppSettings,
+  CustomExportPreset,
+  CustomPresetInput,
+  SourceType,
+  WatchFolder,
+} from "../lib/types";
 
 export type SettingsTab = "folders" | "storage" | "export" | "shortcuts";
 
@@ -19,6 +25,10 @@ interface SettingsViewProps {
   hasQsv?: boolean;
   hardwareEncoder?: string | null;
   ffmpegAvailable: boolean;
+  customPresets: CustomExportPreset[];
+  onCreateCustomPreset: (input: CustomPresetInput) => Promise<void>;
+  onUpdateCustomPreset: (id: string, input: CustomPresetInput) => Promise<void>;
+  onDeleteCustomPreset: (id: string) => Promise<void>;
   onAddWatchFolder: (path: string, sourceType: SourceType) => Promise<void>;
   onToggleWatchFolder: (folderId: string, enabled: boolean) => Promise<void>;
   onRemoveWatchFolder: (folder: WatchFolder) => void;
@@ -36,6 +46,10 @@ export function SettingsView({
   hasQsv = false,
   hardwareEncoder = null,
   ffmpegAvailable,
+  customPresets,
+  onCreateCustomPreset,
+  onUpdateCustomPreset,
+  onDeleteCustomPreset,
   onAddWatchFolder,
   onToggleWatchFolder,
   onRemoveWatchFolder,
@@ -159,6 +173,10 @@ export function SettingsView({
               savingSettings={savingSettings}
               saveFeedback={saveFeedback}
               onSaveSettings={handleSaveSettings}
+              customPresets={customPresets}
+              onCreateCustomPreset={onCreateCustomPreset}
+              onUpdateCustomPreset={onUpdateCustomPreset}
+              onDeleteCustomPreset={onDeleteCustomPreset}
             />
           )}
 

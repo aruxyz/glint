@@ -20,11 +20,15 @@ import {
 } from "lucide-react";
 import { isTauriRuntime } from "../../lib/api";
 import { formatTimecode } from "../../lib/format";
+import { formatCustomPresetSpec } from "../../lib/presets";
 import type {
   AudioTrack,
   AudioTrackMix,
+  ClipMarker,
   ClipSummary,
+  CustomExportPreset,
   ExportPreset,
+  MarkerColor,
 } from "../../lib/types";
 import { AudioMixerPopover } from "../AudioMixerPopover";
 import { GlassSelect } from "../GlassSelect";
@@ -59,6 +63,16 @@ interface PlayerControlsProps {
   mixes: AudioTrackMix[];
   soloTrackOrder: number | null;
   exportingPreset: ExportPreset | null;
+  customPresets: CustomExportPreset[];
+  markers: ClipMarker[];
+  focusedMarkerId: string | null;
+  onClearFocusedMarker: () => void;
+  onAddMarkerAtPlayhead: () => void;
+  onUpdateMarker: (
+    id: string,
+    patch: { label?: string; color?: MarkerColor; timeSec?: number }
+  ) => Promise<void> | void;
+  onDeleteMarker: (id: string) => Promise<void> | void;
   onTogglePlay: () => void;
   onSeek: (timeSec: number) => void;
   onStepFrame: (direction: -1 | 1) => void;
@@ -77,6 +91,8 @@ interface PlayerControlsProps {
   onToggleSolo: (trackOrder: number) => void;
   onToggleFullscreen: () => void;
   onTriggerExport: (preset: ExportPreset) => void;
+  onTriggerCustomExport: (customPreset: CustomExportPreset) => void;
+  onOpenExportSettings: () => void;
   onOpenStageContextMenu: (x: number, y: number) => void;
 }
 
@@ -101,6 +117,13 @@ export function PlayerControls({
   mixes,
   soloTrackOrder,
   exportingPreset,
+  customPresets,
+  markers,
+  focusedMarkerId,
+  onClearFocusedMarker,
+  onAddMarkerAtPlayhead,
+  onUpdateMarker,
+  onDeleteMarker,
   onTogglePlay,
   onSeek,
   onStepFrame,
@@ -119,12 +142,16 @@ export function PlayerControls({
   onToggleSolo,
   onToggleFullscreen,
   onTriggerExport,
+  onTriggerCustomExport,
+  onOpenExportSettings,
   onOpenStageContextMenu,
 }: PlayerControlsProps) {
   const [verticalMenuOpen, setVerticalMenuOpen] = useState(false);
+  const [customMenuOpen, setCustomMenuOpen] = useState(false);
   const [volumeSliderOpen, setVolumeSliderOpen] = useState(false);
   const [isDraggingVolume, setIsDraggingVolume] = useState(false);
   const verticalMenuRef = useRef<HTMLDivElement>(null);
+  const customMenuRef = useRef<HTMLDivElement>(null);
   const volumeControlRef = useRef<HTMLDivElement>(null);
   const wheelHideTimerRef = useRef<number | null>(null);
   const hoverCloseTimerRef = useRef<number | null>(null);
@@ -212,19 +239,28 @@ export function PlayerControls({
   }, [isDraggingVolume]);
 
   useEffect(() => {
-    if (!verticalMenuOpen) return;
+    if (!verticalMenuOpen && !customMenuOpen) return;
     const handleOutside = (e: MouseEvent) => {
       if (
+        verticalMenuOpen &&
         verticalMenuRef.current &&
         !verticalMenuRef.current.contains(e.target as Node)
       ) {
         setVerticalMenuOpen(false);
+      }
+      if (
+        customMenuOpen &&
+        customMenuRef.current &&
+        !customMenuRef.current.contains(e.target as Node)
+      ) {
+        setCustomMenuOpen(false);
       }
     };
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
         setVerticalMenuOpen(false);
+        setCustomMenuOpen(false);
       }
     };
     window.addEventListener("mousedown", handleOutside);
@@ -233,7 +269,7 @@ export function PlayerControls({
       window.removeEventListener("mousedown", handleOutside);
       window.removeEventListener("keydown", handleEsc, true);
     };
-  }, [verticalMenuOpen]);
+  }, [customMenuOpen, verticalMenuOpen]);
 
   const blurIfMouse = (e: React.MouseEvent<HTMLButtonElement>) => {
     if (e.detail > 0) e.currentTarget.blur();
@@ -263,6 +299,15 @@ export function PlayerControls({
           currentTime={currentTime}
           startSec={startSec}
           endSec={endSec}
+          tracks={tracks}
+          mixes={mixes}
+          soloTrackOrder={soloTrackOrder}
+          markers={markers}
+          focusedMarkerId={focusedMarkerId}
+          onClearFocusedMarker={onClearFocusedMarker}
+          onAddMarker={onAddMarkerAtPlayhead}
+          onUpdateMarker={onUpdateMarker}
+          onDeleteMarker={onDeleteMarker}
           onSeek={onSeek}
           onChangeTrim={onChangeTrim}
           onResetTrim={onResetTrim}
@@ -430,11 +475,11 @@ export function PlayerControls({
               }}
               aria-label={
                 masterMuted || masterVolume === 0
-                  ? `Unmute audio (M), volume ${masterVolume}%`
-                  : `Mute audio (M), volume ${masterVolume}%`
+                  ? `Unmute audio (U), volume ${masterVolume}%`
+                  : `Mute audio (U), volume ${masterVolume}%`
               }
               aria-pressed={masterMuted || masterVolume === 0}
-              title={`Preview volume: ${masterMuted ? 0 : masterVolume}% (Scroll to adjust, M to mute)`}
+              title={`Preview volume: ${masterMuted ? 0 : masterVolume}% (Scroll to adjust, U to mute)`}
               className={`btn-secondary h-9 min-w-[64px] gap-1.5 px-2.5 text-[12px] ${
                 masterMuted || masterVolume === 0 ? "text-[var(--status-error-fg)]" : ""
               }`}
@@ -621,6 +666,76 @@ export function PlayerControls({
                       1080x1920 full vertical crop
                     </span>
                   </button>
+                </div>
+              )}
+            </div>
+
+            <div ref={customMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setCustomMenuOpen((prev) => !prev)}
+                disabled={exportingPreset !== null || !inTauri}
+                aria-expanded={customMenuOpen}
+                aria-haspopup="menu"
+                title={!inTauri ? "Export requires Glint desktop app" : "Export with a custom preset"}
+                className="btn-secondary h-[38px] gap-1.5 px-3.5 text-[13px]"
+              >
+                <SlidersHorizontal
+                  className="h-3.5 w-3.5 text-[var(--text-secondary)]"
+                  aria-hidden="true"
+                />
+                <span>Custom</span>
+                <ChevronDown
+                  className="h-3.5 w-3.5 text-[var(--text-secondary)]"
+                  aria-hidden="true"
+                />
+              </button>
+
+              {customMenuOpen && (
+                <div
+                  role="menu"
+                  aria-label="Custom export presets"
+                  className="glass-dock popover-enter origin-bottom-right absolute right-0 bottom-11 z-40 w-[272px] rounded-[12px] p-1.5"
+                >
+                  {customPresets.length === 0 ? (
+                    <div className="px-3 py-2.5 text-left">
+                      <p className="text-[12px] font-medium text-[var(--text-secondary)]">
+                        No custom presets
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomMenuOpen(false);
+                          onOpenExportSettings();
+                        }}
+                        className="mt-1.5 text-[12px] font-semibold text-[var(--accent-primary)] hover:underline"
+                      >
+                        Create in Settings
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="max-h-[240px] space-y-0.5 overflow-y-auto">
+                      {customPresets.map((preset) => (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setCustomMenuOpen(false);
+                            onTriggerCustomExport(preset);
+                          }}
+                          className="nav-item-press flex w-full flex-col items-start rounded-[8px] px-3 py-2 text-left hover:bg-slate-900/5"
+                        >
+                          <span className="w-full truncate text-[13px] font-semibold text-[var(--text-primary)]">
+                            {preset.name}
+                          </span>
+                          <span className="font-mono-tabular mt-0.5 w-full truncate text-[11px] text-[var(--text-secondary)]">
+                            {formatCustomPresetSpec(preset)}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -26,7 +26,16 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { getThumbStreamUrl } from "../../lib/api";
+import {
+  getLocalAudioWaveformUrl,
+  getThumbStreamUrl,
+  getWaveformUrl,
+} from "../../lib/api";
+import {
+  fetchWaveformCached,
+  getCachedWaveform,
+  sliceAndResamplePeaks,
+} from "../../lib/waveform";
 import {
   EDITOR_MIN_AUDIO_TRIM_SEC,
   EDITOR_MIN_TRIM_SEC,
@@ -224,6 +233,7 @@ export function EditorTimeline({
   const [musicDrag, setMusicDrag] = useState<MusicDragState | null>(null);
   const [transitionDrag, setTransitionDrag] = useState<TransitionDragState | null>(null);
   const [rulerScrubbing, setRulerScrubbing] = useState(false);
+  const [waveformMap, setWaveformMap] = useState<Record<string, number[]>>({});
 
   const reorderDragRef = useRef(reorderDrag);
   reorderDragRef.current = reorderDrag;
@@ -297,6 +307,85 @@ export function EditorTimeline({
       : transitionDrag
         ? transitionDrag.frozenPxPerSec
         : timelineScale.pxPerSec;
+
+  const videoWaveRequests = useMemo(() => {
+    const entries: Array<{ key: string; url: string }> = [];
+    if (!streamerBaseUrl) return entries;
+    const seen = new Set<string>();
+    for (const item of layout.items) {
+      const seg = item.segment;
+      const firstUnmuted = seg.audioMix.find((m) => !m.muted);
+      const trackOrder = firstUnmuted?.trackOrder ?? 0;
+      const key = `${seg.clipId}:${trackOrder}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({
+        key,
+        url: getWaveformUrl(streamerBaseUrl, streamerToken, seg.clipId, trackOrder),
+      });
+    }
+    return entries;
+  }, [layout.items, streamerBaseUrl, streamerToken]);
+
+  const audioWaveRequests = useMemo(() => {
+    const entries: Array<{ key: string; url: string }> = [];
+    if (!streamerBaseUrl) return entries;
+    const seen = new Set<string>();
+    for (const layer of audioLayers) {
+      if (layer.isMissing || !layer.filePath) continue;
+      const url = getLocalAudioWaveformUrl(streamerBaseUrl, streamerToken, layer.filePath);
+      if (!url) continue;
+      const key = `local:${layer.filePath}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ key, url });
+    }
+    return entries;
+  }, [audioLayers, streamerBaseUrl, streamerToken]);
+
+  useEffect(() => {
+    const allRequests = [...videoWaveRequests, ...audioWaveRequests];
+    if (allRequests.length === 0) return;
+
+    const controller = new AbortController();
+    const initialHits: Record<string, number[]> = {};
+    const pending: Array<{ key: string; url: string }> = [];
+
+    for (const req of allRequests) {
+      const cached = getCachedWaveform(req.key);
+      if (cached) {
+        initialHits[req.key] = cached;
+      } else {
+        pending.push(req);
+      }
+    }
+
+    if (Object.keys(initialHits).length > 0) {
+      setWaveformMap((prev) => ({ ...prev, ...initialHits }));
+    }
+
+    if (pending.length === 0) return () => controller.abort();
+
+    Promise.allSettled(
+      pending.map(async (req) => {
+        const peaks = await fetchWaveformCached(req.url, req.key, controller.signal);
+        return { key: req.key, peaks };
+      })
+    ).then((results) => {
+      if (controller.signal.aborted) return;
+      const next: Record<string, number[]> = {};
+      for (const res of results) {
+        if (res.status === "fulfilled" && res.value.peaks.length > 0) {
+          next[res.value.key] = res.value.peaks;
+        }
+      }
+      if (Object.keys(next).length > 0) {
+        setWaveformMap((prev) => ({ ...prev, ...next }));
+      }
+    });
+
+    return () => controller.abort();
+  }, [audioWaveRequests, videoWaveRequests]);
 
   const blockLayouts = useMemo(() => {
     const minBlockVisualPx = audioLayers.length === 0 ? 28 : 14;
@@ -1606,7 +1695,7 @@ export function EditorTimeline({
                             </div>
 
                             {showThumb && (
-                              <div className="h-full w-9 shrink-0 overflow-hidden bg-[var(--surface-cinema-frame)]">
+                              <div className="relative z-10 h-full w-9 shrink-0 overflow-hidden bg-[var(--surface-cinema-frame)]">
                                 {thumbSrc && (
                                   <img
                                     src={thumbSrc}
@@ -1617,7 +1706,52 @@ export function EditorTimeline({
                               </div>
                             )}
 
-                            <div className="flex min-w-0 flex-1 items-center justify-between gap-1 px-2 py-0.5">
+                            {block.widthPx >= 44 && (() => {
+                              const segMuted =
+                                seg.masterMuted ||
+                                (seg.audioMix.length > 0 && seg.audioMix.every((m) => m.muted));
+                              if (segMuted) {
+                                return (
+                                  <div
+                                    aria-hidden="true"
+                                    className="pointer-events-none absolute inset-x-1 bottom-2 z-0 h-[1.5px] rounded-full bg-slate-900/15"
+                                  />
+                                );
+                              }
+                              const firstUnmuted = seg.audioMix.find((m) => !m.muted);
+                              const trackOrder = firstUnmuted?.trackOrder ?? 0;
+                              const rawPeaks = waveformMap[`${seg.clipId}:${trackOrder}`];
+                              if (!rawPeaks || rawPeaks.length === 0) return null;
+                              const barCount = Math.min(96, Math.max(12, Math.floor(block.widthPx / 3)));
+                              const slicedPeaks = sliceAndResamplePeaks(
+                                rawPeaks,
+                                seg.startSec,
+                                seg.endSec,
+                                seg.clip.durationSec,
+                                barCount
+                              );
+                              return (
+                                <div
+                                  aria-hidden="true"
+                                  className="pointer-events-none absolute inset-x-1 bottom-1 top-3 z-0 flex items-end gap-[1.5px] opacity-85"
+                                >
+                                  {slicedPeaks.map((amp, barIdx) => (
+                                    <div
+                                      key={barIdx}
+                                      className="flex-1 rounded-t-[1px]"
+                                      style={{
+                                        height: `${Math.max(10, Math.min(92, Math.round(amp * 92)))}%`,
+                                        backgroundColor: selected
+                                          ? "rgba(29, 78, 216, 0.32)"
+                                          : "rgba(29, 78, 216, 0.24)",
+                                      }}
+                                    />
+                                  ))}
+                                </div>
+                              );
+                            })()}
+
+                            <div className="relative z-10 flex min-w-0 flex-1 items-center justify-between gap-1 px-2 py-0.5">
                               <div className="min-w-0 flex-1">
                                 <p className="truncate text-[11px] font-semibold text-[var(--text-primary)]">
                                   {title}
@@ -1787,6 +1921,46 @@ export function EditorTimeline({
                                 className="pointer-events-none absolute inset-y-0 right-0 z-0 border-l border-dashed border-[#6d28d9]/50"
                               />
                             )}
+
+                            {!layer.isMissing && widthPx >= 44 && (() => {
+                              if (layer.muted) {
+                                return (
+                                  <div
+                                    aria-hidden="true"
+                                    className="pointer-events-none absolute inset-x-1.5 bottom-2 z-0 h-[1.5px] rounded-full bg-[#6d28d9] opacity-25"
+                                  />
+                                );
+                              }
+                              const rawPeaks = waveformMap[`local:${layer.filePath}`];
+                              if (!rawPeaks || rawPeaks.length === 0) return null;
+                              const barCount = Math.min(120, Math.max(14, Math.floor(widthPx / 3)));
+                              const slicedPeaks = sliceAndResamplePeaks(
+                                rawPeaks,
+                                layer.trimStartSec,
+                                layer.trimEndSec,
+                                layer.durationSec,
+                                barCount
+                              );
+                              return (
+                                <div
+                                  aria-hidden="true"
+                                  className="pointer-events-none absolute inset-x-1.5 bottom-1 top-3 z-0 flex items-end gap-[1.5px] opacity-85"
+                                >
+                                  {slicedPeaks.map((amp, barIdx) => (
+                                    <div
+                                      key={barIdx}
+                                      className="flex-1 rounded-t-[1px]"
+                                      style={{
+                                        height: `${Math.max(10, Math.min(92, Math.round(amp * 92)))}%`,
+                                        backgroundColor: isSelected
+                                          ? "rgba(109, 40, 217, 0.34)"
+                                          : "rgba(109, 40, 217, 0.24)",
+                                      }}
+                                    />
+                                  ))}
+                                </div>
+                              );
+                            })()}
 
                             <div className="relative z-10 flex min-w-0 flex-1 items-center justify-between gap-2 px-2.5">
                               <div className="min-w-0 flex-1">

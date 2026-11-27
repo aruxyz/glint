@@ -197,6 +197,7 @@ export interface StartExportRequest {
   copyToClipboard: boolean;
   aspectMode?: AspectMode;
   normalizeAudio?: boolean;
+  customPresetId?: string | null;
 }
 
 export interface SaveTrimmedClipRequest {
@@ -467,4 +468,81 @@ export interface LoadEditorProjectResult {
   project: EditorProjectDetail;
   missingSegments: MissingProjectSegment[];
   missingAudioLayers: MissingProjectAudioLayer[];
+}
+
+export type MarkerColor = "blue" | "amber" | "emerald" | "rose";
+
+export interface ClipMarker {
+  id: string;
+  clipId: string;
+  timeSec: number;
+  label: string;
+  color: MarkerColor;
+  createdAt: string;
+}
+
+export type CustomPresetContainer = "mp4" | "mkv" | "webm";
+export type CustomPresetResolution =
+  | "source"
+  | "1080p"
+  | "720p"
+  | "vertical_blur_9_16"
+  | "vertical_crop_9_16";
+export type CustomPresetFps = "source" | "60" | "30";
+
+export interface CustomExportPreset {
+  id: string;
+  name: string;
+  container: CustomPresetContainer;
+  targetSizeMb: number | null;
+  videoBitrateKbps: number | null;
+  resolution: CustomPresetResolution;
+  fps: CustomPresetFps;
+  audioNormalize: boolean;
+  stretch169: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomPresetInput {
+  name: string;
+  container: CustomPresetContainer;
+  targetSizeMb: number | null;
+  videoBitrateKbps: number | null;
+  resolution: CustomPresetResolution;
+  fps: CustomPresetFps;
+  audioNormalize: boolean;
+  stretch169: boolean;
+}
+
+export interface BatchExportStartResult {
+  batchId: string;
+  total: number;
+}
+
+export interface BatchExportErrorItem {
+  clipId: string;
+  fileName: string;
+  error: string;
+}
+
+export interface BatchExportProgressPayload {
+  batchId: string;
+  currentIndex: number;
+  total: number;
+  currentClipId: string;
+  currentFileName: string;
+  clipPercent: number;
+  completedCount: number;
+  failedCount: number;
+}
+
+export interface BatchExportCompletedPayload {
+  batchId: string;
+  completedCount: number;
+  failedCount: number;
+  outputDir: string;
+  lastOutputPath: string | null;
+  cancelled: boolean;
+  errors: BatchExportErrorItem[];
 }
